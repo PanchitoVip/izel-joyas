@@ -105,7 +105,7 @@ async function pantallaAcceso(vencida = false) {
 /* ---- Armazón ---- */
 const MENU = [
   ['inicio', 'Inicio'], ['venta', 'Nueva venta'], ['ventas', 'Ventas'], ['productos', 'Stock'], ['clientes', 'Clientes'],
-  ['proveedores', 'Proveedores'], ['compras', 'Compras'], ['caja', 'Caja'], ['arreglos', 'Arreglos'], ['reportes', 'Reportes'], ['ajustes', 'Ajustes'],
+  ['proveedores', 'Proveedores'], ['compras', 'Compras'], ['caja', 'Caja'], ['pagos', 'Pagos'], ['arreglos', 'Arreglos'], ['reportes', 'Reportes'], ['ajustes', 'Ajustes'],
 ];
 let op = {};
 
@@ -793,6 +793,57 @@ VISTAS.caja = async (v) => {
   $('#filas').addEventListener('click', intentar(async (e) => {
     const b = e.target.closest('[data-borrar]');
     if (!b || !await confirmar('Borrar movimiento', 'Se elimina este movimiento de la caja.', 'Borrar')) return;
+    await api('DELETE', `caja/${b.dataset.borrar}`);
+    refrescar();
+  }));
+};
+
+/* ---- Pagos ---- */
+const TIPOS_PAGO = [['Sueldos', 'Sueldo'], ['Servicios', 'Servicio']];
+
+function formPago() {
+  const m = abrirModal('Registrar pago', h`<form class="form" id="fp">
+    <label class="f">Tipo<select name="categoria" id="tipoPago">${TIPOS_PAGO.map(([cat, etq]) => h`<option value="${cat}">${etq}</option>`)}</select></label>
+    <label class="f">Nombre<input name="concepto" id="nombrePago" required placeholder="Ej: Belén"></label>
+    <label class="f">Medio<select name="medio">${opciones(op.medios)}</select></label>
+    <label class="f">Monto ($)<input name="monto" type="number" min="0.01" step="0.01" required></label>
+    <div class="modal-foot full"><button class="btn" data-cerrar type="button">Cancelar</button><button class="btn primary">Guardar</button></div></form>`);
+  $$('[data-cerrar]', m).forEach((b) => b.addEventListener('click', cerrarModal));
+  $('#tipoPago', m).addEventListener('change', (e) => {
+    $('#nombrePago', m).placeholder = e.target.value === 'Servicios' ? 'Ej: Gas, Luz, Agua' : 'Ej: Belén';
+  });
+  $('#fp', m).addEventListener('submit', intentar(async (e) => {
+    e.preventDefault();
+    const d = leerForm(e.target);
+    await api('POST', 'caja', { ...d, tipo: 'egreso', monto: aCentavos(d.monto) });
+    cerrarModal();
+    aviso('Pago registrado');
+    refrescar();
+  }));
+}
+
+VISTAS.pagos = async (v) => {
+  const c = await api('GET', `caja${consultaFechas()}`);
+  const pagos = c.movimientos.filter((m) => m.categoria === 'Sueldos' || m.categoria === 'Servicios');
+  const suma = (cat) => pagos.filter((m) => m.categoria === cat).reduce((s, m) => s + m.monto, 0);
+  v.innerHTML = h`
+    <div class="head"><h1>Pagos</h1><div class="head-actions"><button class="btn primary" id="nuevo" type="button">Registrar pago</button></div></div>
+    <p class="hint">Sueldos de empleados y pagos de servicios (agua, luz, gas, etc.). Quedan anotados en la Caja como gastos.</p>
+    <div class="tiles">
+      <div class="tile"><small>Sueldos del período</small><strong>${plata(suma('Sueldos'))}</strong></div>
+      <div class="tile"><small>Servicios del período</small><strong>${plata(suma('Servicios'))}</strong></div>
+      <div class="tile"><small>Total pagado</small><strong>${plata(suma('Sueldos') + suma('Servicios'))}</strong></div>
+    </div>
+    <div class="head cols-gap">${selectorFechas(c.desde, c.hasta)}</div>
+    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>Nombre</th><th>Medio</th><th class="n">Monto</th><th></th></tr></thead>
+    <tbody id="filas">${pagos.length ? pagos.map((m) => h`<tr><td>${fechaHora(m.fecha)}</td><td>${m.categoria === 'Sueldos' ? 'Sueldo' : 'Servicio'}</td><td>${m.concepto}</td><td>${m.medio}</td>
+      <td class="n neg">−${plata(m.monto)}</td>
+      <td class="actions">${!m.ref_tipo && h`<button class="btn small" data-borrar="${m.id}" type="button">Borrar</button>`}</td></tr>`) : h`<tr><td colspan="6" class="empty">No hay pagos en este período.</td></tr>`}</tbody></table></div>`;
+  usarFechas(refrescar);
+  $('#nuevo').addEventListener('click', formPago);
+  $('#filas').addEventListener('click', intentar(async (e) => {
+    const b = e.target.closest('[data-borrar]');
+    if (!b || !await confirmar('Borrar pago', 'Se elimina este pago de la caja.', 'Borrar')) return;
     await api('DELETE', `caja/${b.dataset.borrar}`);
     refrescar();
   }));
