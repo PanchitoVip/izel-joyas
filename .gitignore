@@ -1,0 +1,6 @@
+# Datos reales del negocio: nunca subirlos a un repositorio
+gestion/data/
+*.db
+*.db-shm
+*.db-wal
+*.zip

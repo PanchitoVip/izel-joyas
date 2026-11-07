@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Izel Joyas | Joyería en plata 925 en Moreno</title>
+  <meta name="description" content="Anillos, pulseras, gargantillas, dijes y aros en plata 925. Elegí tus favoritos y consultá el precio por WhatsApp. Estamos en Merlo 2633, Moreno.">
+  <meta property="og:title" content="Izel Joyas | Diseños exclusivos">
+  <meta property="og:description" content="Joyas en plata 925. Mirá el catálogo y consultá el precio por WhatsApp.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="img/productos/iz-002.jpg">
+  <meta name="theme-color" content="#3a1224">
+  <link rel="icon" href="img/logo.jpg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "JewelryStore",
+    "name": "Izel Joyas",
+    "image": "img/logo.jpg",
+    "sameAs": ["https://www.instagram.com/izeljoyas/"],
+    "address": {
+      "@type": "PostalAddress",
+      "streetAddress": "Merlo 2633",
+      "addressLocality": "Moreno",
+      "addressRegion": "Provincia de Buenos Aires",
+      "postalCode": "B1744OEO",
+      "addressCountry": "AR"
+    },
+    "openingHours": ["Mo-Fr 09:00-19:00", "Sa 09:30-14:00"]
+  }
+  </script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#inicio" aria-label="Izel Joyas, inicio">
+      <img src="img/logo.jpg" alt="" width="44" height="44">
+      <span>Izel Joyas</span>
+    </a>
+    <nav class="top-nav" aria-label="Secciones">
+      <a href="#catalogo">Catálogo</a>
+      <a href="#como-comprar">Cómo comprar</a>
+      <a href="#cuidados">Cuidados</a>
+      <a href="#local">El local</a>
+    </nav>
+    <button class="cart-btn" id="abrirCarrito" type="button">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M6 8h12l1 12H5L6 8Zm3 0V6a3 3 0 0 1 6 0v2"/></svg>
+      <span class="cart-label">Carrito</span>
+      <span class="cart-count" id="carritoCuenta" hidden>0</span>
+    </button>
+  </header>
+
+  <main id="inicio">
+    <section class="hero">
+      <div class="hero-text">
+        <p class="eyebrow">Diseños exclusivos · Moreno</p>
+        <h1>Joyas para <em>brillar</em> todos los días</h1>
+        <p class="hero-lead">Anillos, pulseras y gargantillas en plata 925. Elegí tus favoritos, armá tu carrito y te pasamos el precio por WhatsApp.</p>
+        <div class="hero-cta">
+          <a class="btn btn-light" href="#catalogo">Ver el catálogo</a>
+          <span class="open-state" id="estadoLocal"></span>
+        </div>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <img class="arch a1" src="img/productos/iz-003.jpg" alt="">
+        <img class="arch a2" src="img/productos/iz-002.jpg" alt="">
+        <img class="arch a3" src="img/productos/iz-024.jpg" alt="">
+      </div>
+    </section>
+
+    <div class="ribbon" aria-hidden="true">
+      <div class="ribbon-track">
+        <span>Plata 925</span><span>Oro 18k</span><span>Diseños exclusivos</span><span>Hecho para regalar</span>
+        <span>Plata 925</span><span>Oro 18k</span><span>Diseños exclusivos</span><span>Hecho para regalar</span>
+        <span>Plata 925</span><span>Oro 18k</span><span>Diseños exclusivos</span><span>Hecho para regalar</span>
+      </div>
+    </div>
+
+    <section class="catalog" id="catalogo">
+      <div class="section-head">
+        <p class="eyebrow dark">Nuestras piezas</p>
+        <h2>Catálogo</h2>
+      </div>
+      <div class="filters">
+        <div class="chips" id="categorias" role="group" aria-label="Filtrar por categoría"></div>
+        <label class="search">
+          <span class="sr">Buscar</span>
+          <input id="buscar" type="search" placeholder="Buscar: corazón, cruz, arcoíris…" autocomplete="off">
+        </label>
+      </div>
+      <p class="result-count" id="resultado" aria-live="polite"></p>
+      <div class="grid" id="productos"></div>
+      <aside class="more-band">
+        <div>
+          <h3>¿Buscás otra cosa?</h3>
+          <p>También tenemos carteras, Swarovski, aros de plata y anillos Falange. Mirá las historias destacadas o escribinos.</p>
+        </div>
+        <div class="more-actions">
+          <a class="btn btn-ghost" id="linkInstagram" target="_blank" rel="noopener">Ver Instagram</a>
+          <a class="btn btn-wpp" id="linkConsulta" target="_blank" rel="noopener">Escribinos</a>
+        </div>
+      </aside>
+    </section>
+
+    <section class="how" id="como-comprar">
+      <div class="section-head">
+        <p class="eyebrow dark">Simple y sin vueltas</p>
+        <h2>Cómo comprar</h2>
+      </div>
+      <ol class="steps">
+        <li><span>1</span><h3>Elegí tus joyas</h3><p>Tocá “Comprar” en todo lo que te guste y se suma a tu carrito.</p></li>
+        <li><span>2</span><h3>Consultá el precio</h3><p>Desde el carrito nos mandás tu lista por WhatsApp con un solo toque.</p></li>
+        <li><span>3</span><h3>Coordinamos</h3><p>Te respondemos precio y disponibilidad, y arreglamos cómo te llega o cuándo pasás por el local.</p></li>
+      </ol>
+    </section>
+
+    <section class="care" id="cuidados">
+      <div class="care-col">
+        <p class="eyebrow dark">Para que duren</p>
+        <h2>Cuidá tu plata</h2>
+        <ul>
+          <li>Guardala seca y separada de otras piezas, mejor en una bolsita cerrada.</li>
+          <li>Sacátela para bañarte, ir a la pileta o limpiar con productos químicos.</li>
+          <li>Ponete el perfume y las cremas antes que las joyas.</li>
+          <li>Si se oscurece, frotala suave con un paño para plata. Es normal y se recupera.</li>
+        </ul>
+      </div>
+      <div class="care-col sizes">
+        <p class="eyebrow dark">Anillos</p>
+        <h2>¿Cuál es tu talle?</h2>
+        <p>Tomá un anillo que te quede cómodo y medí con una regla el diámetro interior, en milímetros. Anotalo en el carrito y te decimos qué talle te corresponde.</p>
+        <p>¿Es un regalo? Podés traer un anillo de la persona al local y lo medimos.</p>
+      </div>
+    </section>
+
+    <section class="location" id="local">
+      <div class="location-info">
+        <p class="eyebrow">Te esperamos</p>
+        <h2>Podés encontrarnos en</h2>
+        <address>Merlo 2633<br>B1744OEO Moreno<br>Provincia de Buenos Aires</address>
+        <dl class="hours">
+          <div><dt>Lunes a viernes</dt><dd>9:00 a 19:00</dd></div>
+          <div><dt>Sábados</dt><dd>9:30 a 14:00</dd></div>
+        </dl>
+        <a class="btn btn-light" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=Merlo+2633,+Moreno,+Buenos+Aires">Cómo llegar</a>
+      </div>
+      <iframe class="map" title="Ubicación de Izel Joyas en el mapa" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+        src="https://www.google.com/maps?q=Merlo+2633,+B1744OEO+Moreno,+Provincia+de+Buenos+Aires&z=16&output=embed"></iframe>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <img src="img/logo.jpg" alt="" width="56" height="56" loading="lazy">
+    <p>Izel Joyas · Diseños exclusivos</p>
+    <a id="footInstagram" target="_blank" rel="noopener">@izeljoyas</a>
+  </footer>
+
+  <div class="scrim" id="scrim" hidden></div>
+
+  <aside class="drawer" id="carrito" role="dialog" aria-modal="true" aria-labelledby="carritoTitulo" aria-hidden="true" inert>
+    <div class="drawer-head">
+      <h2 id="carritoTitulo">Tu carrito</h2>
+      <button class="icon-btn" id="cerrarCarrito" type="button" aria-label="Cerrar carrito">✕</button>
+    </div>
+    <div class="drawer-body" id="carritoItems"></div>
+    <div class="drawer-foot" id="carritoPie">
+      <label class="note">
+        <span>¿Querés agregar algo? <small>(opcional)</small></span>
+        <textarea id="nota" rows="2" maxlength="200" placeholder="Ej: es para regalo, ¿hacen envíos?"></textarea>
+      </label>
+      <button class="btn btn-wpp btn-block" id="consultar" type="button">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-8.6 15L2 22l5.2-1.4A10 10 0 1 0 12 2Zm0 18.2a8.2 8.2 0 0 1-4.2-1.2l-.3-.2-3 .8.8-3-.2-.3A8.2 8.2 0 1 1 12 20.2Zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.2-.4.2-.4.6-1.2.1-.2 0-.3 0-.5l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5c-.2 0-.5.1-.7.3-.2.3-.9.9-.9 2.2s1 2.6 1.1 2.7c.1.2 1.9 2.9 4.6 4 1.7.7 2.4.8 3.2.6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.2-1.2-.1 0-.3-.1-.5-.2Z"/></svg>
+        Consultar precio por WhatsApp
+      </button>
+      <button class="link-btn" id="vaciar" type="button">Vaciar carrito</button>
+    </div>
+  </aside>
+
+  <dialog class="detail" id="detalle" aria-labelledby="detalleNombre">
+    <button class="icon-btn detail-close" id="cerrarDetalle" type="button" aria-label="Cerrar">✕</button>
+    <div class="detail-grid">
+      <img id="detalleImg" alt="">
+      <div class="detail-info">
+        <p class="eyebrow dark" id="detalleCat"></p>
+        <h2 id="detalleNombre"></h2>
+        <p class="material" id="detalleMaterial"></p>
+        <p id="detalleDesc"></p>
+        <p class="code" id="detalleCodigo"></p>
+        <button class="btn btn-primary btn-block" id="detalleComprar" type="button">Comprar</button>
+        <button class="link-btn" id="detalleCompartir" type="button">Compartir esta joya</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="aviso" role="status" hidden></div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

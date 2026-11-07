@@ -1,0 +1,12 @@
+{
+  "name": "izel-gestion",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sistema de gestión de Izel Joyas: stock, clientes, proveedores, ventas y caja",
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/api.test.mjs"
+  }
+}
