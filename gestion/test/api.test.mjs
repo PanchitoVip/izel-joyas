@@ -71,6 +71,46 @@ test('la instalación exige el código y una clave larga', async () => {
   assert.deepEqual((await ok('GET', '/api/sesion')), { configurado: true, logueado: true });
 });
 
+test('con IZEL_CLAVE_INICIAL el sistema arranca con esa clave ya puesta, sin pedir código', async () => {
+  const puerto = 3112;
+  const urlBase = `http://127.0.0.1:${puerto}`;
+  const datosPropios = fs.mkdtempSync(path.join(os.tmpdir(), 'izel-test-clave-'));
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BASE,
+    env: { ...process.env, PORT: String(puerto), IZEL_DATOS: datosPropios, IZEL_CLAVE_INICIAL: 'clave-fijada-de-antemano' },
+    stdio: 'ignore',
+  });
+  try {
+    for (let i = 0; i < 50; i += 1) {
+      try { await fetch(`${urlBase}/api/sesion`); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
+    }
+    const sesion = await (await fetch(`${urlBase}/api/sesion`)).json();
+    assert.deepEqual(sesion, { configurado: true, logueado: false });
+    const rInstalar = await fetch(`${urlBase}/api/instalar`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ codigo: 'cualquiera', clave: 'otra-clave-cualquiera' }),
+    });
+    assert.equal(rInstalar.status, 409, 'nadie puede crear su propia clave: ya hay una puesta');
+    const rMal = await fetch(`${urlBase}/api/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clave: 'cualquier-otra-cosa' }),
+    });
+    assert.equal(rMal.status, 401);
+    const rLogin = await fetch(`${urlBase}/api/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clave: 'clave-fijada-de-antemano' }),
+    });
+    assert.equal(rLogin.status, 200);
+  } finally {
+    proc.kill();
+    await new Promise((r) => setTimeout(r, 300));
+    fs.rmSync(datosPropios, { recursive: true, force: true });
+  }
+});
+
 test('el catálogo público nunca expone precio, costo ni stock', async () => {
   const productos = await ok('GET', '/api/productos');
   assert.equal(productos.length, 30, 'arranca con los productos de Instagram');

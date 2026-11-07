@@ -57,6 +57,8 @@ IZEL_DATOS=/ruta/del/disco
 
 Tiene que estar detrás de HTTPS. El código de instalación aparece en los logs la primera vez.
 
+Si se agrega `IZEL_CLAVE_INICIAL=la-contraseña-que-quieras`, el sistema arranca ya con esa contraseña puesta: no pide código de instalación y nadie que entre primero puede elegir la suya. Sirve para que un disco que se borra solo (plan gratis, cada redeploy) no vuelva a pedir el código cada vez.
+
 **Opción rápida: sólo el catálogo, gratis.** La carpeta `catalogo/` es un sitio estático: se puede subir a Netlify, Cloudflare Pages o GitHub Pages con el número cargado en `config.js`. Los productos salen de `data/productos.json`. Para conectarlo después a un sistema en otro dominio, poner su dirección en `api` de `config.js` y `CATALOGO_ORIGEN=https://dominio-del-catalogo` en el servidor.
 
 **Opción local: la gestión sólo en la compu del local.** Funciona con los `.bat`, pero el catálogo público no se actualizaría solo, y si la compu se rompe sólo quedan las copias que se hayan guardado afuera.

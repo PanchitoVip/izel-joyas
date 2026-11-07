@@ -64,6 +64,12 @@ function codigoInstalacion() {
   return c;
 }
 
+// Si se define IZEL_CLAVE_INICIAL, el sistema arranca con esa contraseña ya puesta: no pide código de instalación
+// y nadie que entre primero puede elegir su propia clave.
+if (!db.conf('clave') && process.env.IZEL_CLAVE_INICIAL) {
+  db.setConf('clave', hashClave(process.env.IZEL_CLAVE_INICIAL));
+}
+
 /* ---- Límites de intentos ---- */
 const intentos = new Map();
 const ipDe = (req) => (DETRAS_DE_PROXY && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress;
