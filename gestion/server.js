@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { abrirDb, hoy } from './db.js';
+import { abrirDb, hoy, SUCURSALES } from './db.js';
 import { crearApi, catalogoPublico, registrarConsulta, ErrorApi } from './api.js';
 
 const BASE = path.dirname(fileURLToPath(import.meta.url));
@@ -52,6 +52,11 @@ function tokenDe(req) {
 function logueado(req) {
   const t = tokenDe(req);
   return Boolean(t && db.get('SELECT 1 x FROM sesiones WHERE token = ? AND expira > ?', hashToken(t), Date.now()));
+}
+// La sucursal activa se guarda en la sesión: se puede cambiar en cualquier momento sin volver a loguearse.
+function sucursalDeSesion(req) {
+  const t = tokenDe(req);
+  return db.get('SELECT sucursal FROM sesiones WHERE token = ? AND expira > ?', hashToken(t), Date.now())?.sucursal || SUCURSALES[0];
 }
 
 // Código que se muestra sólo en la consola del servidor: evita que un extraño cree la clave en un sistema recién publicado.
@@ -158,7 +163,7 @@ async function rutaPublica(req, res, ruta) {
 
 async function rutaSesion(req, res, ruta) {
   if (ruta === '/api/sesion' && req.method === 'GET') {
-    json(res, 200, { configurado: Boolean(db.conf('clave')), logueado: logueado(req) });
+    json(res, 200, { configurado: Boolean(db.conf('clave')), logueado: logueado(req), sucursal: logueado(req) ? sucursalDeSesion(req) : null });
     return true;
   }
   if (ruta === '/api/instalar' && req.method === 'POST') {
@@ -196,6 +201,12 @@ async function rutaPrivada(req, res, ruta, url) {
     res.setHeader('set-cookie', 'izel_sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
     return json(res, 200, { ok: true });
   }
+  if (ruta === '/api/sucursal' && req.method === 'POST') {
+    const b = await leerJson(req);
+    if (!SUCURSALES.includes(b.sucursal)) throw new ErrorApi(400, 'Sucursal no válida');
+    db.run('UPDATE sesiones SET sucursal = ? WHERE token = ?', b.sucursal, hashToken(tokenDe(req)));
+    return json(res, 200, { sucursal: b.sucursal });
+  }
   if (ruta === '/api/clave' && req.method === 'POST') {
     const b = await leerJson(req);
     if (!claveCorrecta(String(b.actual || ''), db.conf('clave'))) throw new ErrorApi(403, 'La contraseña actual no es correcta');
@@ -227,7 +238,7 @@ async function rutaPrivada(req, res, ruta, url) {
   }
 
   const cuerpo = ['POST', 'PUT'].includes(req.method) ? await leerJson(req) : {};
-  return json(res, 200, api(req.method, ruta, Object.fromEntries(url.searchParams), cuerpo));
+  return json(res, 200, api(req.method, ruta, Object.fromEntries(url.searchParams), cuerpo, sucursalDeSesion(req)));
 }
 
 const CSP_ADMIN = "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";

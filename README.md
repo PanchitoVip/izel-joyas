@@ -9,6 +9,12 @@ Dos partes que comparten una sola base de datos:
 
 Cuando un producto se marca "Publicar en el catálogo" en la gestión, aparece en el catálogo. El público nunca recibe precios, costos ni cantidades de stock.
 
+## Dos locales: Moreno y Morón
+
+La gestión tiene un selector **"Local"** arriba a la izquierda. Cada local tiene sus propias ventas, caja, stock, clientes y arreglos — lo que se carga en uno no aparece en el otro. El catálogo de productos y la lista de proveedores son **compartidos** entre los dos (se cargan una sola vez), aunque cada local anota sus propias compras y lo que le debe a cada proveedor por separado.
+
+Es una sola contraseña para los dos locales por ahora: cualquiera que entre puede cambiar de local con el selector, se puede cambiar cuando se quiera. El login por mail/usuario (uno por local) queda para cuando se publique oficialmente.
+
 ## Probarlo en la compu
 
 Hace falta [Node.js](https://nodejs.org) 22.13 o más nuevo. No hay nada más que instalar.

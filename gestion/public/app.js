@@ -108,17 +108,23 @@ const MENU = [
   ['proveedores', 'Proveedores'], ['compras', 'Compras'], ['caja', 'Caja'], ['pagos', 'Pagos'], ['arreglos', 'Arreglos'], ['reportes', 'Reportes'], ['ajustes', 'Ajustes'],
 ];
 let op = {};
+let sucursalActual = '';
 
 function armazon() {
   $('#app').innerHTML = h`<div class="layout">
     <aside class="side">
       <div class="side-brand"><img src="/img/logo.jpg" alt=""><span>Izel Joyas</span></div>
+      <label class="side-sucursal"><span>Local</span><select id="sucursal">${opciones(op.sucursales, sucursalActual)}</select></label>
       <nav aria-label="Secciones">${MENU.map(([r, t]) => h`<a href="#/${r}" data-r="${r}">${t}</a>`)}</nav>
       <div class="side-foot"><a href="/" target="_blank" rel="noopener">Ver catálogo</a><button id="salir" type="button">Salir</button></div>
     </aside>
     <main id="vista"></main>
   </div>`;
   $('#salir').addEventListener('click', intentar(async () => { await api('POST', 'logout', {}); pantallaAcceso(); }));
+  $('#sucursal').addEventListener('change', intentar(async (e) => {
+    await api('POST', 'sucursal', { sucursal: e.target.value });
+    location.reload();
+  }));
 }
 
 const VISTAS = {};
@@ -984,6 +990,7 @@ VISTAS.ajustes = async (v) => {
 async function iniciar() {
   const s = await fetch('/api/sesion').then((r) => r.json());
   if (!s.logueado) { pantallaAcceso(); return; }
+  sucursalActual = s.sucursal;
   op = await api('GET', 'opciones');
   armazon();
   navegar();

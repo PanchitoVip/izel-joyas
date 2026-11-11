@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { abrirDb } from '../db.js';
 
 const BASE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUERTO = 3111;
@@ -68,7 +70,7 @@ test('la instalación exige el código y una clave larga', async () => {
   assert.equal((await pedir('POST', '/api/instalar', { codigo: CODIGO, clave: 'corta' })).status, 400);
   await ok('POST', '/api/instalar', { codigo: CODIGO, clave: CLAVE });
   assert.equal((await pedir('POST', '/api/instalar', { codigo: CODIGO, clave: CLAVE })).status, 409);
-  assert.deepEqual((await ok('GET', '/api/sesion')), { configurado: true, logueado: true });
+  assert.deepEqual((await ok('GET', '/api/sesion')), { configurado: true, logueado: true, sucursal: 'Moreno' });
 });
 
 test('con IZEL_CLAVE_INICIAL el sistema arranca con esa clave ya puesta, sin pedir código', async () => {
@@ -85,7 +87,7 @@ test('con IZEL_CLAVE_INICIAL el sistema arranca con esa clave ya puesta, sin ped
       try { await fetch(`${urlBase}/api/sesion`); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
     }
     const sesion = await (await fetch(`${urlBase}/api/sesion`)).json();
-    assert.deepEqual(sesion, { configurado: true, logueado: false });
+    assert.deepEqual(sesion, { configurado: true, logueado: false, sucursal: null });
     const rInstalar = await fetch(`${urlBase}/api/instalar`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -277,9 +279,87 @@ test('la copia de seguridad descarga una base válida', async () => {
   assert.equal(b.subarray(0, 15).toString(), 'SQLite format 3');
 });
 
+test('Moreno y Morón no se pisan: clientes, stock y caja quedan separados por sucursal', async () => {
+  assert.deepEqual(await ok('GET', '/api/sesion'), { configurado: true, logueado: true, sucursal: 'Moreno' });
+
+  const clienteMoreno = (await ok('POST', '/api/clientes', { nombre: 'Cliente Moreno' })).id;
+  await ok('POST', `/api/productos/${prod.id}/ajuste`, { cantidad: 5, motivo: 'Carga Moreno' });
+  const stockMoreno = (await ok('GET', '/api/productos')).find((x) => x.id === prod.id).stock;
+
+  const r = await ok('POST', '/api/sucursal', { sucursal: 'Morón' });
+  assert.equal(r.sucursal, 'Morón');
+  assert.equal((await ok('GET', '/api/sesion')).sucursal, 'Morón');
+
+  assert.ok(!(await ok('GET', '/api/clientes')).some((c) => c.id === clienteMoreno), 'el cliente de Moreno no aparece en Morón');
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === prod.id).stock, 0, 'Morón arranca sin el stock de Moreno');
+  assert.equal(
+    (await pedir('POST', '/api/ventas', {
+      tipo: 'Comprobante interno', cliente_id: clienteMoreno,
+      items: [{ producto_id: prod.id, cantidad: 1, precio: 100 }], pagos: [{ medio: 'Efectivo', monto: 100 }],
+    })).status,
+    404,
+    'no se puede vender a un cliente de otra sucursal',
+  );
+
+  const clienteMoron = (await ok('POST', '/api/clientes', { nombre: 'Cliente Morón' })).id;
+  await ok('POST', `/api/productos/${prod.id}/ajuste`, { cantidad: 3, motivo: 'Carga Morón' });
+  await ok('POST', '/api/caja', { tipo: 'ingreso', categoria: 'Aporte', concepto: 'Apertura Morón', medio: 'Efectivo', monto: 999900 });
+  assert.equal((await ok('GET', '/api/caja')).efectivo, 999900);
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === prod.id).stock, 3);
+
+  await ok('POST', '/api/sucursal', { sucursal: 'Moreno' });
+  assert.ok((await ok('GET', '/api/clientes')).some((c) => c.id === clienteMoreno), 'Moreno conserva su cliente');
+  assert.ok(!(await ok('GET', '/api/clientes')).some((c) => c.id === clienteMoron), 'el cliente de Morón no aparece en Moreno');
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === prod.id).stock, stockMoreno, 'el stock de Moreno no lo tocó lo cargado en Morón');
+  assert.notEqual((await ok('GET', '/api/caja')).efectivo, 999900, 'la caja de Morón no se mezcla con la de Moreno');
+});
+
 test('cinco claves mal bloquean el login y cerrar sesión funciona', async () => {
   await ok('POST', '/api/logout', {});
   assert.deepEqual(await pedir('GET', '/api/sesion').then((r) => r.data.logueado), false);
   for (let i = 0; i < 5; i += 1) assert.equal((await pedir('POST', '/api/login', { clave: 'mala' }, { sinSesion: true })).status, 401);
   assert.equal((await pedir('POST', '/api/login', { clave: CLAVE }, { sinSesion: true })).status, 429);
+});
+
+test('una base creada antes de separar por sucursal migra sus datos a Moreno', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'izel-test-migracion-'));
+  const raw = new DatabaseSync(path.join(dir, 'izel.db'));
+  raw.exec(`
+    CREATE TABLE config (k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE sesiones (token TEXT PRIMARY KEY, expira INTEGER NOT NULL);
+    CREATE TABLE proveedores (id INTEGER PRIMARY KEY, nombre TEXT NOT NULL, activo INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE clientes (id INTEGER PRIMARY KEY, nombre TEXT NOT NULL, activo INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE productos (
+      id INTEGER PRIMARY KEY, codigo TEXT NOT NULL UNIQUE, nombre TEXT NOT NULL, descripcion TEXT DEFAULT '',
+      categoria TEXT NOT NULL DEFAULT 'Otros', material TEXT DEFAULT '', costo INTEGER NOT NULL DEFAULT 0, precio INTEGER NOT NULL DEFAULT 0,
+      stock INTEGER NOT NULL DEFAULT 0, stock_minimo INTEGER NOT NULL DEFAULT 0, proveedor_id INTEGER, imagen TEXT DEFAULT '',
+      publicado INTEGER NOT NULL DEFAULT 0, destacado INTEGER NOT NULL DEFAULT 0, revisar INTEGER NOT NULL DEFAULT 0, activo INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE movimientos_stock (id INTEGER PRIMARY KEY, producto_id INTEGER NOT NULL, fecha TEXT NOT NULL, cantidad INTEGER NOT NULL, motivo TEXT NOT NULL, ref_tipo TEXT, ref_id INTEGER);
+    CREATE TABLE cuenta_corriente (id INTEGER PRIMARY KEY, entidad TEXT NOT NULL, entidad_id INTEGER NOT NULL, fecha TEXT NOT NULL, concepto TEXT NOT NULL, debe INTEGER NOT NULL DEFAULT 0, haber INTEGER NOT NULL DEFAULT 0, ref_tipo TEXT, ref_id INTEGER);
+    CREATE TABLE ventas (id INTEGER PRIMARY KEY, tipo TEXT NOT NULL, numero INTEGER NOT NULL, fecha TEXT NOT NULL, cliente_id INTEGER, subtotal INTEGER NOT NULL, descuento INTEGER NOT NULL DEFAULT 0, recargo INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL, costo_total INTEGER NOT NULL DEFAULT 0, pagado INTEGER NOT NULL DEFAULT 0, estado TEXT NOT NULL DEFAULT 'ok', factura_arca TEXT DEFAULT '', notas TEXT DEFAULT '', UNIQUE (tipo, numero));
+    CREATE TABLE venta_items (id INTEGER PRIMARY KEY, venta_id INTEGER NOT NULL, producto_id INTEGER, descripcion TEXT NOT NULL, cantidad INTEGER NOT NULL, precio INTEGER NOT NULL, costo INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE compras (id INTEGER PRIMARY KEY, proveedor_id INTEGER NOT NULL, fecha TEXT NOT NULL, comprobante TEXT DEFAULT '', total INTEGER NOT NULL, notas TEXT DEFAULT '');
+    CREATE TABLE compra_items (id INTEGER PRIMARY KEY, compra_id INTEGER NOT NULL, producto_id INTEGER NOT NULL, cantidad INTEGER NOT NULL, costo INTEGER NOT NULL);
+    CREATE TABLE caja (id INTEGER PRIMARY KEY, fecha TEXT NOT NULL, tipo TEXT NOT NULL, categoria TEXT NOT NULL, concepto TEXT NOT NULL, medio TEXT NOT NULL, monto INTEGER NOT NULL, ref_tipo TEXT, ref_id INTEGER);
+    CREATE TABLE cierres_caja (id INTEGER PRIMARY KEY, fecha TEXT NOT NULL, esperado INTEGER NOT NULL, contado INTEGER NOT NULL, diferencia INTEGER NOT NULL, notas TEXT DEFAULT '');
+    CREATE TABLE arreglos (id INTEGER PRIMARY KEY, cliente_id INTEGER, cliente_nombre TEXT DEFAULT '', descripcion TEXT NOT NULL, precio INTEGER NOT NULL DEFAULT 0, pagado INTEGER NOT NULL DEFAULT 0, estado TEXT NOT NULL DEFAULT 'pendiente', fecha_ingreso TEXT NOT NULL, fecha_entrega TEXT DEFAULT '', notas TEXT DEFAULT '');
+    CREATE TABLE consultas (id INTEGER PRIMARY KEY, fecha TEXT NOT NULL, codigo TEXT NOT NULL);
+  `);
+  const { lastInsertRowid } = raw.prepare('INSERT INTO productos (codigo, nombre, stock, stock_minimo) VALUES (?, ?, ?, ?)').run('IZ-900', 'Producto viejo', 7, 2);
+  raw.prepare("INSERT INTO clientes (id, nombre) VALUES (1, 'Cliente viejo')").run();
+  raw.close();
+
+  const db = abrirDb(dir, path.join(dir, 'no-existe.json'));
+  const prodId = Number(lastInsertRowid);
+  const productoMigrado = db.get('SELECT * FROM productos WHERE id = ?', prodId);
+  assert.ok(!('stock' in productoMigrado), 'la columna stock ya no vive en productos');
+  const stockFila = db.get('SELECT * FROM stock_sucursal WHERE producto_id = ?', prodId);
+  assert.equal(stockFila.sucursal, 'Moreno');
+  assert.equal(stockFila.cantidad, 7);
+  assert.equal(stockFila.stock_minimo, 2);
+  assert.equal(db.get('SELECT sucursal FROM clientes WHERE id = 1').sucursal, 'Moreno');
+
+  db.raw.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });
