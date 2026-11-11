@@ -33,7 +33,7 @@ button { cursor: pointer; }
 .side-brand { display: flex; align-items: center; gap: .55rem; padding: 0 .5rem 1rem; font: 600 1.25rem Georgia, serif; }
 .side-brand img { width: 36px; height: 36px; border-radius: 50%; }
 .side-sucursal { display: grid; gap: .2rem; padding: 0 .5rem .9rem; font-size: .8rem; color: #f1e4e9; }
-.side-sucursal select { min-height: 34px; font-weight: 600; }
+.side-sucursal select { min-height: 34px; font-weight: 600; color: var(--ink); }
 .side nav { display: grid; gap: 2px; }
 .side nav a { display: block; padding: .55rem .7rem; border-radius: 8px; color: #f1e4e9; text-decoration: none; }
 .side nav a:hover { background: var(--wine-2); }
