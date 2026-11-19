@@ -928,7 +928,7 @@ VISTAS.arreglos = async (v) => {
     if (b.dataset.listo) { await api('POST', `arreglos/${b.dataset.listo}/estado`, { estado: 'listo' }); refrescar(); return; }
     if (b.dataset.cancelar) {
       const a = lista.find((x) => x.id === Number(b.dataset.cancelar));
-      const avisoSena = a.pagado > 0 ? ` Ya se cobraron ${plata(a.pagado)} de seña o pago a cuenta: el sistema no los devuelve solo, hay que arreglarlo con la clienta a mano (efectivo o dejarlo a favor).` : '';
+      const avisoSena = a.pagado > 0 ? ` Ya se cobraron ${plata(a.pagado)} de seña o pago a cuenta: queda en el local, no se devuelve.` : '';
       if (!await confirmar('Cancelar arreglo', `El arreglo queda marcado como cancelado y sale de la lista de pendientes.${avisoSena}`, 'Cancelar arreglo')) return;
       await api('POST', `arreglos/${b.dataset.cancelar}/estado`, { estado: 'cancelado' });
       aviso('Arreglo cancelado');
