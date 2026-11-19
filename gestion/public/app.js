@@ -128,13 +128,22 @@ function armazon() {
 }
 
 const VISTAS = {};
+// Cada vista carga sus datos de forma asíncrona antes de pintar. Si el usuario navega de nuevo
+// mientras la anterior todavía está esperando una respuesta (clic rápido entre pantallas, o la
+// demo de Render que tarda hasta 50s en despertar), las dos quedan "en vuelo" a la vez: si la
+// primera (más lenta) termina después, pisa el contenido de la pantalla a la que ya navegamos.
+// Por eso cada llamada se numera y, si al terminar ya no es la más reciente, se descarta su
+// resultado y se vuelve a pintar la pantalla actual en vez de dejar la vieja superpuesta.
+let navegacionId = 0;
 async function navegar() {
+  const miId = (navegacionId += 1);
   const [ruta = 'inicio', param] = location.hash.replace(/^#\//, '').split('/');
   const vista = VISTAS[ruta] || VISTAS.inicio;
   $$('.side nav a').forEach((a) => a.classList.toggle('on', a.dataset.r === ruta));
   const v = $('#vista');
   if (!v) return;
   try { await vista(v, param); } catch (e) { if (e.message !== 'Tenés que iniciar sesión') v.innerHTML = h`<p class="notice">${e.message}</p>`; }
+  if (miId !== navegacionId) await navegar();
 }
 const refrescar = () => navegar();
 
@@ -350,12 +359,12 @@ VISTAS.productos = async (v, param) => {
 /* ---- Clientes y proveedores ---- */
 const ENTIDADES = {
   clientes: {
-    titulo: 'Clientes', singular: 'cliente', saldoTexto: 'Te debe',
+    titulo: 'Clientes', singular: 'cliente', saldoTexto: 'Te debe', saldoFavor: 'Tiene a favor',
     campos: [['nombre', 'Nombre y apellido', 'text', true], ['telefono', 'Teléfono / WhatsApp'], ['email', 'Email', 'email'], ['documento', 'DNI o CUIT'],
       ['cumpleanos', 'Cumpleaños', 'date'], ['talle_anillo', 'Talle de anillo'], ['direccion', 'Dirección'], ['notas', 'Notas (gustos, regalos)']],
   },
   proveedores: {
-    titulo: 'Proveedores', singular: 'proveedor', saldoTexto: 'Le debés',
+    titulo: 'Proveedores', singular: 'proveedor', saldoTexto: 'Le debés', saldoFavor: 'Tenés a favor',
     campos: [['nombre', 'Nombre o razón social', 'text', true], ['contacto', 'Persona de contacto'], ['telefono', 'Teléfono / WhatsApp'], ['email', 'Email', 'email'],
       ['cuit', 'CUIT'], ['direccion', 'Dirección'], ['notas', 'Notas (condiciones, plazos)']],
   },
@@ -390,7 +399,9 @@ async function verCuenta(tabla, x) {
   const esCliente = tabla === 'clientes';
   const msg = `Hola ${x.nombre}, te escribimos de Izel Joyas. Te recordamos que tenés un saldo pendiente de ${plata(c.saldo)}. ¡Muchas gracias!`;
   const m = abrirModal(`Cuenta corriente: ${x.nombre}`, h`
-    <p>${e.saldoTexto}: <strong class="${c.saldo > 0 ? 'neg' : ''}">${plata(c.saldo)}</strong></p>
+    <p>${c.saldo > 0 ? h`${e.saldoTexto}: <strong class="neg">${plata(c.saldo)}</strong>`
+      : c.saldo < 0 ? h`${e.saldoFavor}: <strong>${plata(-c.saldo)}</strong>`
+      : h`Sin saldo pendiente`}</p>
     <form class="form" id="fc">
       <label class="f">${esCliente ? 'Cobrar' : 'Pagar'} ($)<input name="monto" type="number" min="0.01" step="0.01" required value="${c.saldo > 0 ? aPesos(c.saldo) : ''}"></label>
       <label class="f">Medio<select name="medio">${opciones(op.medios)}</select></label>
@@ -908,12 +919,23 @@ VISTAS.arreglos = async (v) => {
         ${a.estado === 'pendiente' && h`<button class="btn small" data-listo="${a.id}" type="button">Listo</button>`}
         ${a.estado === 'listo' && a.telefono && h`<a class="btn small" target="_blank" rel="noopener" href="${linkWa(a.telefono, `Hola ${a.cliente}, tu arreglo ya está listo para retirar en Izel Joyas.`)}">Avisar</a>`}
         ${['pendiente', 'listo'].includes(a.estado) && h`<button class="btn small" data-entregar="${a.id}" type="button">Entregar</button>`}
+        ${['pendiente', 'listo'].includes(a.estado) && h`<button class="btn small danger" data-cancelar="${a.id}" type="button">Cancelar</button>`}
       </td></tr>`) : h`<tr><td colspan="7" class="empty">No hay arreglos cargados.</td></tr>`}</tbody></table></div>`;
   $('#nuevo').addEventListener('click', intentar(formArreglo));
   $('#filas').addEventListener('click', intentar(async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b.dataset.listo) { await api('POST', `arreglos/${b.dataset.listo}/estado`, { estado: 'listo' }); refrescar(); } else formEntrega(lista.find((a) => a.id === Number(b.dataset.entregar)));
+    if (b.dataset.listo) { await api('POST', `arreglos/${b.dataset.listo}/estado`, { estado: 'listo' }); refrescar(); return; }
+    if (b.dataset.cancelar) {
+      const a = lista.find((x) => x.id === Number(b.dataset.cancelar));
+      const avisoSena = a.pagado > 0 ? ` Ya se cobraron ${plata(a.pagado)} de seña o pago a cuenta: el sistema no los devuelve solo, hay que arreglarlo con la clienta a mano (efectivo o dejarlo a favor).` : '';
+      if (!await confirmar('Cancelar arreglo', `El arreglo queda marcado como cancelado y sale de la lista de pendientes.${avisoSena}`, 'Cancelar arreglo')) return;
+      await api('POST', `arreglos/${b.dataset.cancelar}/estado`, { estado: 'cancelado' });
+      aviso('Arreglo cancelado');
+      refrescar();
+      return;
+    }
+    formEntrega(lista.find((a) => a.id === Number(b.dataset.entregar)));
   }));
 };
 

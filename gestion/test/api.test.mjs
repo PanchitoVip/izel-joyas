@@ -157,6 +157,25 @@ test('una compra suma stock, actualiza costo y deja deuda con el proveedor', asy
   assert.equal((await ok('GET', `/api/proveedores/${proveedor}/cuenta`)).saldo, 0);
 });
 
+test('una compra no puede sumar stock a un producto ya dado de baja', async () => {
+  const { id } = await ok('POST', '/api/productos', { nombre: 'Para dar de baja', categoria: 'Anillos', precio: 1000 });
+  await ok('DELETE', `/api/productos/${id}`);
+  const r = await pedir('POST', '/api/compras', {
+    proveedor_id: proveedor, items: [{ producto_id: id, cantidad: 5, costo: 100 }],
+  });
+  assert.equal(r.status, 400, 'el producto ya no existe para el depósito');
+});
+
+test('no se puede dar de baja un producto que todavía tiene stock cargado', async () => {
+  const { id } = await ok('POST', '/api/productos', { nombre: 'Con stock, no se borra', categoria: 'Anillos', precio: 1000, stock: 5 });
+  // Si se pudiera dar de baja así, esas 5 unidades quedarían huérfanas: el producto desaparece
+  // de /api/productos (que sólo muestra activo = 1) y ya no se podría ni ajustar su stock
+  // (el ajuste exige "existe", que también pide activo = 1), ni venderlo, ni verlo nunca más.
+  assert.equal((await pedir('DELETE', `/api/productos/${id}`)).status, 400, 'todavía tiene 5 unidades cargadas');
+  await ok('POST', `/api/productos/${id}/ajuste`, { cantidad: -5, motivo: 'Vaciar para la prueba' });
+  await ok('DELETE', `/api/productos/${id}`);
+});
+
 test('una venta mixta descuenta stock, entra a caja y deja saldo en cuenta corriente', async () => {
   await ok('POST', '/api/caja', { tipo: 'ingreso', categoria: 'Saldo inicial', concepto: 'Apertura', medio: 'Efectivo', monto: 10000000 });
   cliente = (await ok('POST', '/api/clientes', { nombre: 'Ana Prueba', telefono: '1122334455', cumpleanos: '1990-05-10' })).id;
@@ -186,6 +205,37 @@ test('no se vende fiado sin cliente, ni sin stock salvo confirmación, ni de má
   const muchos = [{ producto_id: prod.id, cantidad: 99, precio: 1 }];
   assert.equal((await pedir('POST', '/api/ventas', { tipo: 'Comprobante interno', items: muchos, pagos: [{ medio: 'Efectivo', monto: 99 }] })).status, 409);
   assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === prod.id).stock, 8, 'una venta rechazada no toca el stock');
+});
+
+test('una venta con el mismo producto en dos renglones no puede superar el stock total disponible', async () => {
+  const { id: id2 } = await ok('POST', '/api/productos', { nombre: 'Repetido en la venta', categoria: 'Anillos', precio: 100, stock: 10 });
+  // 8 + 8 = 16 pedidos sobre un stock de 10: cada renglón por separado "entraría" (8 <= 10),
+  // pero juntos superan lo que hay. No debe aceptarse sin permitir_sin_stock.
+  const r = await pedir('POST', '/api/ventas', {
+    tipo: 'Comprobante interno',
+    items: [{ producto_id: id2, cantidad: 8, precio: 100 }, { producto_id: id2, cantidad: 8, precio: 100 }],
+    pagos: [{ medio: 'Efectivo', monto: 1600 }],
+  });
+  assert.equal(r.status, 409);
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === id2).stock, 10, 'la venta rechazada no toca el stock');
+  const ok2 = await ok('POST', '/api/ventas', {
+    tipo: 'Comprobante interno',
+    items: [{ producto_id: id2, cantidad: 5, precio: 100 }, { producto_id: id2, cantidad: 5, precio: 100 }],
+    pagos: [{ medio: 'Efectivo', monto: 1000 }],
+  });
+  assert.ok(ok2.id, 'pedir exactamente el total disponible entre los dos renglones sí se acepta');
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === id2).stock, 0);
+});
+
+test('un ajuste manual no puede dejar el stock en negativo', async () => {
+  const r = await pedir('POST', `/api/productos/${prod.id}/ajuste`, { cantidad: -9999, motivo: 'Rotura' });
+  assert.equal(r.status, 409);
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === prod.id).stock, 8, 'el ajuste rechazado no toca el stock');
+  // Un ajuste que deja el stock justo en cero sí se permite; se restaura después para no afectar las pruebas siguientes.
+  await ok('POST', `/api/productos/${prod.id}/ajuste`, { cantidad: -8, motivo: 'Rotura total (prueba)' });
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === prod.id).stock, 0);
+  await ok('POST', `/api/productos/${prod.id}/ajuste`, { cantidad: 8, motivo: 'Restaurar stock de prueba' });
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === prod.id).stock, 8);
 });
 
 test('cobrar la cuenta corriente entra a caja pero no cuenta como venta nueva', async () => {
@@ -223,11 +273,36 @@ test('anular una venta revierte stock, caja y cuenta corriente', async () => {
   assert.equal((await pedir('POST', `/api/ventas/${id}/anular`)).status, 400, 'no se anula dos veces');
 });
 
+test('anular una venta que vació el stock de un producto ya dado de baja lo reactiva', async () => {
+  const { id } = await ok('POST', '/api/productos', { nombre: 'Se agota y se borra', categoria: 'Anillos', precio: 1000, stock: 3 });
+  const venta = await ok('POST', '/api/ventas', {
+    tipo: 'Comprobante interno', items: [{ producto_id: id, cantidad: 3, precio: 1000 }], pagos: [{ medio: 'Efectivo', monto: 3000 }],
+  });
+  await ok('DELETE', `/api/productos/${id}`); // queda en 0: se puede dar de baja
+  assert.ok(!(await ok('GET', '/api/productos')).some((p) => p.id === id), 'desapareció de la lista al darse de baja');
+  await ok('POST', `/api/ventas/${venta.id}/anular`);
+  const p = (await ok('GET', '/api/productos')).find((x) => x.id === id);
+  // Si siguiera inactivo, estas 3 unidades que la anulación le devolvió quedarían huérfanas
+  // (invisibles e inajustables), igual que si se hubiera podido borrar con stock de entrada.
+  assert.ok(p, 'la anulación lo reactiva: no puede quedar con stock y fuera de la lista');
+  assert.equal(p.stock, 3);
+});
+
 test('el cierre de caja registra y ajusta la diferencia', async () => {
   const { efectivo } = await ok('GET', '/api/resumen');
   const c = await ok('POST', '/api/caja/cierre', { contado: efectivo - 5000 });
   assert.equal(c.diferencia, -5000);
   assert.equal((await ok('GET', '/api/resumen')).efectivo, efectivo - 5000);
+});
+
+test('un movimiento de caja anterior a un cierre ya hecho no se puede borrar (desarmaría ese cierre)', async () => {
+  await ok('POST', '/api/caja', { tipo: 'ingreso', categoria: 'Otros ingresos', concepto: 'Antes del cierre', medio: 'Efectivo', monto: 12345 });
+  const id = (await ok('GET', '/api/caja')).movimientos.find((m) => m.concepto === 'Antes del cierre').id;
+  await ok('POST', '/api/caja/cierre', { contado: (await ok('GET', '/api/resumen')).efectivo });
+  assert.equal((await pedir('DELETE', `/api/caja/${id}`)).status, 400, 'ya hay un cierre posterior: borrarlo desincroniza el efectivo que ya se cerró');
+  await ok('POST', '/api/caja', { tipo: 'ingreso', categoria: 'Otros ingresos', concepto: 'Después del cierre', medio: 'Efectivo', monto: 999 });
+  const idNuevo = (await ok('GET', '/api/caja')).movimientos.find((m) => m.concepto === 'Después del cierre').id;
+  await ok('DELETE', `/api/caja/${idNuevo}`);
 });
 
 test('arreglo: la seña entra a caja y al entregar se cobra el resto', async () => {
@@ -312,6 +387,60 @@ test('Moreno y Morón no se pisan: clientes, stock y caja quedan separados por s
   assert.ok(!(await ok('GET', '/api/clientes')).some((c) => c.id === clienteMoron), 'el cliente de Morón no aparece en Moreno');
   assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === prod.id).stock, stockMoreno, 'el stock de Moreno no lo tocó lo cargado en Morón');
   assert.notEqual((await ok('GET', '/api/caja')).efectivo, 999900, 'la caja de Morón no se mezcla con la de Moreno');
+});
+
+test('un proveedor no se borra si tiene saldo en alguna sucursal, aunque el neto entre las dos sea cero', async () => {
+  const prov = (await ok('POST', '/api/proveedores', { nombre: 'Proveedor Multi-sucursal' })).id;
+
+  assert.equal((await ok('GET', '/api/sesion')).sucursal, 'Moreno');
+  await ok('POST', `/api/proveedores/${prov}/saldo-inicial`, { monto: 500000 });
+  assert.equal((await ok('GET', `/api/proveedores/${prov}/cuenta`)).saldo, 500000, 'Moreno le debe 500000 a este proveedor');
+
+  await ok('POST', '/api/sucursal', { sucursal: 'Morón' });
+  await ok('POST', `/api/proveedores/${prov}/pago`, { monto: 500000, medio: 'Efectivo' });
+  assert.equal((await ok('GET', `/api/proveedores/${prov}/cuenta`)).saldo, -500000, 'Morón quedó a favor por error, pero eso no borra la deuda de Moreno');
+
+  // El neto entre las dos sucursales da cero, pero Moreno sigue debiendo de verdad: no debe poder borrarse desde ninguna.
+  assert.equal((await pedir('DELETE', `/api/proveedores/${prov}`)).status, 400, 'no se puede borrar desde Morón: Moreno le sigue debiendo');
+  await ok('POST', '/api/sucursal', { sucursal: 'Moreno' });
+  assert.equal((await pedir('DELETE', `/api/proveedores/${prov}`)).status, 400, 'tampoco desde Moreno: sigue habiendo saldo pendiente');
+
+  // Recién cuando las dos sucursales están realmente en cero se puede borrar.
+  await ok('POST', `/api/proveedores/${prov}/pago`, { monto: 500000, medio: 'Efectivo' });
+  await ok('POST', '/api/sucursal', { sucursal: 'Morón' });
+  await ok('POST', `/api/proveedores/${prov}/saldo-inicial`, { monto: 500000 });
+  assert.equal((await ok('GET', `/api/proveedores/${prov}/cuenta`)).saldo, 0);
+  await ok('DELETE', `/api/proveedores/${prov}`);
+  await ok('POST', '/api/sucursal', { sucursal: 'Moreno' });
+});
+
+test('la baja de un producto no se cuela si el neto entre sucursales da cero pero una tiene stock físico real', async () => {
+  const { id } = await ok('POST', '/api/productos', { nombre: 'Multi-sucursal, no se borra con neto cero', categoria: 'Anillos', precio: 1000 });
+  // Moreno queda con stock prometido en negativo (venta confirmada sin tener todavía la mercadería).
+  await ok('POST', '/api/ventas', {
+    tipo: 'Comprobante interno', permitir_sin_stock: true,
+    items: [{ producto_id: id, cantidad: 5, precio: 1000 }], pagos: [{ medio: 'Efectivo', monto: 5000 }],
+  });
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === id).stock, -5);
+
+  await ok('POST', '/api/sucursal', { sucursal: 'Morón' });
+  await ok('POST', `/api/productos/${id}/ajuste`, { cantidad: 5, motivo: 'Stock físico real en Morón' });
+  assert.equal((await ok('GET', '/api/productos')).find((x) => x.id === id).stock, 5);
+
+  // El total entre las dos sucursales da cero (-5 de Moreno + 5 de Morón), pero Morón tiene
+  // 5 unidades físicas de verdad: si el chequeo de baja suma en vez de mirar cada sucursal por
+  // separado, se borraría igual y esas 5 unidades quedarían huérfanas (invisibles, no se pueden
+  // ni vender ni ajustar nunca más).
+  assert.equal(
+    (await pedir('DELETE', `/api/productos/${id}`)).status,
+    400,
+    'Morón todavía tiene 5 unidades físicas, aunque el total entre sucursales dé cero',
+  );
+
+  await ok('POST', `/api/productos/${id}/ajuste`, { cantidad: -5, motivo: 'Vaciar Morón para la prueba' });
+  await ok('POST', '/api/sucursal', { sucursal: 'Moreno' });
+  await ok('POST', `/api/productos/${id}/ajuste`, { cantidad: 5, motivo: 'Saldar la deuda de Moreno para la prueba' });
+  await ok('DELETE', `/api/productos/${id}`);
 });
 
 test('cinco claves mal bloquean el login y cerrar sesión funciona', async () => {

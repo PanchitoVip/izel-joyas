@@ -24,7 +24,7 @@ gestion/         Servidor Node y sistema privado
   api.js         Rutas y toda la lógica de negocio
   db.js          Esquema SQLite y carga inicial de productos
   public/        Interfaz del sistema (JS sin frameworks)
-  test/          Pruebas de la API: npm test, 21 en verde
+  test/          Pruebas de la API: npm test, 29 en verde
   iniciar.bat    Prende el servidor si hace falta y abre la página pedida
   data/          DATOS REALES: base, fotos subidas y copias. Está en .gitignore
 Abrir Sistema.bat / Abrir Catalogo.bat    Las dos entradas para la dueña
@@ -57,7 +57,9 @@ Ideas sumadas: arreglos con seña, aumento masivo de precios, cierre de caja, re
 
 ## Estado
 
-**Funciona y se probó:** las 21 pruebas de API, el recorrido completo de interfaz en Edge headless (alta de proveedor y cliente, compra, venta mixta, cobro, gasto, cierre, arreglo, foto, venta sin stock, anulación, salir y volver a entrar), el mapa con el pin correcto, las dos entradas `.bat` ejecutadas de verdad en la PC original, y la separación por sucursal (Moreno/Morón) probada a mano en el navegador contra la base real.
+**Funciona y se probó:** las 29 pruebas de API, el recorrido completo de interfaz en Edge headless (alta de proveedor y cliente, compra, venta mixta, cobro, gasto, cierre, arreglo, foto, venta sin stock, anulación, salir y volver a entrar), el mapa con el pin correcto, las dos entradas `.bat` ejecutadas de verdad en la PC original, y la separación por sucursal (Moreno/Morón) probada a mano en el navegador contra la base real.
+
+**Auditoría con agentes de revisión (uno por módulo, dos vueltas cada uno para no dejar regresiones):** encontraron y arreglaron 9 bugs reales — el más repetido fue el mismo error en tres lugares distintos (borrado de proveedor, de producto, de movimiento de caja): chequear el **neto sumado entre Moreno y Morón** en vez de cada sucursal por separado, lo que podía esconder una deuda o dejar stock huérfano aunque pareciera todo en cero. También: no se podía borrar un movimiento de caja ya contado en un cierre (lo desarmaba sin dejar rastro); una venta con el mismo producto repetido en dos renglones podía superar el stock sin usar "permitir sin stock"; una compra podía sumar stock a un producto dado de baja; el botón "Cancelar" de un arreglo existía en el backend pero no en la pantalla; y una condición de carrera real en la navegación (`navegar()` en `app.js`) donde una pantalla lenta podía pisar el contenido de la pantalla a la que ya habías navegado. Quedaron dos preguntas para la dueña, sin tocar nada: qué hacer con una seña de arreglo ya cobrada al cancelarlo (¿se devuelve, queda a favor, se pierde?), y si el recibo de "Venta con factura ARCA" debería avisar algo cuando todavía no se cargó el CAE.
 
 **Ya publicado** (ver "Sobre la publicación"): repo en GitHub (`PanchitoVip/izel-joyas`), catálogo en Netlify, y una copia de demo de la gestión en Render (free, se resetea sola).
 

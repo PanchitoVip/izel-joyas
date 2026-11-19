@@ -77,7 +77,8 @@ CREATE INDEX IF NOT EXISTS idx_caja_fecha ON caja (fecha);
 CREATE TABLE IF NOT EXISTS cierres_caja (
   id INTEGER PRIMARY KEY, fecha TEXT NOT NULL, sucursal TEXT NOT NULL DEFAULT '${SUCURSAL_POR_DEFECTO}',
   esperado INTEGER NOT NULL, contado INTEGER NOT NULL,
-  diferencia INTEGER NOT NULL, notas TEXT DEFAULT ''
+  diferencia INTEGER NOT NULL, notas TEXT DEFAULT '',
+  hasta_movimiento_id INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS arreglos (
   id INTEGER PRIMARY KEY, sucursal TEXT NOT NULL DEFAULT '${SUCURSAL_POR_DEFECTO}',
@@ -98,6 +99,9 @@ function migrarASucursales(raw) {
   for (const tabla of ['sesiones', 'clientes', 'ventas', 'caja', 'compras', 'cierres_caja', 'arreglos', 'movimientos_stock', 'cuenta_corriente']) {
     agregarColumna(tabla, 'sucursal', `TEXT NOT NULL DEFAULT '${SUCURSAL_POR_DEFECTO}'`);
   }
+  // Para bases de antes de guardar, en cada cierre, hasta qué movimiento de caja quedó contado
+  // (se usa para no dejar borrar un movimiento que ya quedó dentro de un cierre hecho).
+  agregarColumna('cierres_caja', 'hasta_movimiento_id', 'INTEGER NOT NULL DEFAULT 0');
   if (columnasDe('productos').includes('stock')) {
     raw.exec(`INSERT INTO stock_sucursal (producto_id, sucursal, cantidad, stock_minimo)
       SELECT id, '${SUCURSAL_POR_DEFECTO}', stock, stock_minimo FROM productos`);

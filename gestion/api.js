@@ -109,13 +109,27 @@ export function crearApi(db) {
     if (clienteId) existe('clientes', clienteId, sucursal);
 
     return db.tx(() => {
+      // Si el mismo producto aparece en más de un ítem (dos renglones del mismo artículo), el
+      // stock disponible se compara contra el pedido TOTAL de ese producto en la venta, no ítem
+      // por ítem: comparar contra el stock sin descontar lo que ya piden los otros renglones
+      // dejaría vender de más (ej: 8+8 sobre un stock de 10, cada ítem por separado "entra").
+      const pedidoPorProducto = new Map();
+      for (const i of b.items) if (i.producto_id) {
+        const productoId = entero(i.producto_id, 'Producto', 1);
+        const cantidad = entero(i.cantidad, 'La cantidad', 1, 100000);
+        pedidoPorProducto.set(productoId, (pedidoPorProducto.get(productoId) || 0) + cantidad);
+      }
+      for (const [productoId, cantidadPedida] of pedidoPorProducto) {
+        if (b.permitir_sin_stock) continue;
+        const { nombre } = db.get('SELECT nombre FROM productos WHERE id = ? AND activo = 1', productoId) || falla('Producto inexistente');
+        const stockActual = db.get('SELECT cantidad FROM stock_sucursal WHERE producto_id = ? AND sucursal = ?', productoId, sucursal)?.cantidad || 0;
+        if (stockActual < cantidadPedida) falla(`Sin stock suficiente de ${nombre} (hay ${stockActual})`, 409);
+      }
       const items = b.items.map((i) => {
         const cantidad = entero(i.cantidad, 'La cantidad', 1, 100000);
         const precio = entero(i.precio, 'El precio');
         if (!i.producto_id) return { producto_id: null, descripcion: requerido(i.descripcion, 'la descripción', 200), cantidad, precio, costo: 0 };
         const p = db.get('SELECT * FROM productos WHERE id = ? AND activo = 1', entero(i.producto_id, 'Producto', 1)) || falla('Producto inexistente');
-        const stockActual = db.get('SELECT cantidad FROM stock_sucursal WHERE producto_id = ? AND sucursal = ?', p.id, sucursal)?.cantidad || 0;
-        if (stockActual < cantidad && !b.permitir_sin_stock) falla(`Sin stock suficiente de ${p.nombre} (hay ${stockActual})`, 409);
         return { producto_id: p.id, descripcion: `${p.codigo} ${p.nombre}`, cantidad, precio, costo: p.costo };
       });
       const subtotal = items.reduce((s, i) => s + i.precio * i.cantidad, 0);
@@ -167,7 +181,13 @@ export function crearApi(db) {
       if (v.estado === 'anulada') falla('La venta ya estaba anulada');
       const etiqueta = `${v.tipo} N° ${v.numero}`;
       db.run(`UPDATE ventas SET estado = 'anulada' WHERE id = ?`, id);
-      for (const i of v.items) if (i.producto_id) moverStock(sucursal, i.producto_id, i.cantidad, `Anulación: ${etiqueta}`, 'venta', id);
+      for (const i of v.items) if (i.producto_id) {
+        moverStock(sucursal, i.producto_id, i.cantidad, `Anulación: ${etiqueta}`, 'venta', id);
+        // Si el producto se dio de baja después de esta venta (se permite sólo cuando se queda
+        // sin stock: ver DELETE /api/productos/:id), anular la venta le devuelve unidades y no
+        // puede seguir inactivo: quedaría con stock otra vez pero invisible para vender o ajustar.
+        db.run('UPDATE productos SET activo = 1 WHERE id = ? AND activo = 0', i.producto_id);
+      }
       for (const p of v.pagos) movimientoCaja(sucursal, 'egreso', 'Anulación de venta', `Anulación ${etiqueta}`, p.medio, p.monto, 'venta', id);
       if (v.total > v.pagado) asiento(sucursal, 'cliente', v.cliente_id, `Anulación ${etiqueta}`, 0, v.total - v.pagado, 'venta', id);
       return { ok: true };
@@ -194,7 +214,7 @@ export function crearApi(db) {
       const id = Number(lastInsertRowid);
       const etiqueta = `Compra${comprobante ? ` ${comprobante}` : ` N° ${id}`}`;
       for (const i of items) {
-        db.get('SELECT id FROM productos WHERE id = ?', i.producto_id) || falla('Producto inexistente');
+        db.get('SELECT id FROM productos WHERE id = ? AND activo = 1', i.producto_id) || falla('Producto inexistente');
         db.run('INSERT INTO compra_items (compra_id, producto_id, cantidad, costo) VALUES (?, ?, ?, ?)', id, i.producto_id, i.cantidad, i.costo);
         db.run('UPDATE productos SET costo = ?, proveedor_id = ? WHERE id = ?', i.costo, proveedorId, i.producto_id);
         moverStock(sucursal, i.producto_id, i.cantidad, etiqueta, 'compra', id);
@@ -374,6 +394,17 @@ export function crearApi(db) {
   });
   ruta('DELETE', '/api/productos/:id', ({ id }) => {
     existe('productos', id);
+    // El producto es compartido entre sucursales: si a cualquiera de las dos le queda stock
+    // cargado, dar de baja el producto lo saca de /api/productos y de los reportes (que
+    // filtran activo = 1) y, al exigir "existe" (activo = 1) para ajustar stock o ver sus
+    // movimientos, esas unidades quedan huérfanas: no se pueden vender, ajustar ni ver nunca más.
+    // Ojo: sumar el stock de las dos sucursales no alcanza. Con "permitir_sin_stock" una sucursal
+    // puede quedar en negativo (venta prometida sin stock todavía) mientras la otra tiene stock
+    // físico real; si las cantidades se cancelan en la suma (-5 y +5 = 0), el chequeo por suma
+    // dejaría borrar el producto y esas 5 unidades físicas quedarían huérfanas igual. Por eso se
+    // mira cada sucursal por separado, no el total.
+    const conStock = db.get('SELECT COUNT(*) n FROM stock_sucursal WHERE producto_id = ? AND cantidad != 0', id).n;
+    if (conStock !== 0) falla('No se puede eliminar: todavía tiene stock cargado en algún local');
     db.run('UPDATE productos SET activo = 0, publicado = 0 WHERE id = ?', id);
     return { ok: true };
   });
@@ -381,6 +412,11 @@ export function crearApi(db) {
     existe('productos', id);
     const cantidad = entero(b.cantidad, 'La cantidad', -100000, 100000);
     if (!cantidad) falla('La cantidad no puede ser cero');
+    const stockActual = db.get('SELECT cantidad FROM stock_sucursal WHERE producto_id = ? AND sucursal = ?', id, sucursal)?.cantidad || 0;
+    // Un ajuste manual corrige el conteo contra la realidad física: el depósito no puede tener
+    // menos de cero unidades, a diferencia de una venta (que sí puede forzarse a quedar en negativo
+    // como promesa de stock todavía no recibido, con permitir_sin_stock).
+    if (stockActual + cantidad < 0) falla(`El ajuste dejaría el stock en negativo (hay ${stockActual})`, 409);
     db.tx(() => moverStock(sucursal, id, cantidad, requerido(b.motivo, 'el motivo', 120)));
     return { ok: true };
   });
@@ -404,8 +440,8 @@ export function crearApi(db) {
     const campos = CAMPOS.clientes;
     const valores = (b) => campos.map((c) => (c === 'nombre' ? requerido(b.nombre, 'el nombre', 120) : texto(b[c], 300)));
     ruta('GET', '/api/clientes', ({ sucursal }) => db.all(
-      `SELECT t.*, COALESCE((SELECT SUM(debe - haber) FROM cuenta_corriente m WHERE m.entidad = 'cliente' AND m.entidad_id = t.id), 0) saldo
-       FROM clientes t WHERE t.activo = 1 AND t.sucursal = ? ORDER BY t.nombre`, sucursal,
+      `SELECT t.*, COALESCE((SELECT SUM(debe - haber) FROM cuenta_corriente m WHERE m.entidad = 'cliente' AND m.entidad_id = t.id AND m.sucursal = ?), 0) saldo
+       FROM clientes t WHERE t.activo = 1 AND t.sucursal = ? ORDER BY t.nombre`, sucursal, sucursal,
     ));
     ruta('POST', '/api/clientes', ({ b, sucursal }) => ({
       id: Number(db.run(`INSERT INTO clientes (${campos.join(', ')}, sucursal) VALUES (${campos.map(() => '?').join(', ')}, ?)`, ...valores(b), sucursal).lastInsertRowid),
@@ -425,7 +461,9 @@ export function crearApi(db) {
       existe('clientes', id, sucursal);
       return {
         saldo: saldo('cliente', id, sucursal),
-        movimientos: db.all('SELECT * FROM cuenta_corriente WHERE entidad = ? AND entidad_id = ? ORDER BY id DESC LIMIT 200', 'cliente', id),
+        // Igual que en proveedores: se filtra también por sucursal, aunque hoy un cliente nunca
+        // tenga movimientos de otro local, para que esta consulta no dependa de ese supuesto.
+        movimientos: db.all('SELECT * FROM cuenta_corriente WHERE entidad = ? AND entidad_id = ? AND sucursal = ? ORDER BY id DESC LIMIT 200', 'cliente', id, sucursal),
       };
     });
     ruta('POST', '/api/clientes/:id/pago', ({ id, b, sucursal }) => {
@@ -463,8 +501,11 @@ export function crearApi(db) {
     });
     ruta('DELETE', '/api/proveedores/:id', ({ id }) => {
       existe('proveedores', id);
-      const total = db.get(`SELECT COALESCE(SUM(debe - haber), 0) s FROM cuenta_corriente WHERE entidad = 'proveedor' AND entidad_id = ?`, id).s;
-      if (total !== 0) falla('No se puede eliminar: tiene saldo en cuenta corriente');
+      // El proveedor es compartido entre sucursales, pero la deuda es por local: hay que revisar
+      // cada sucursal por separado. Si no, una deuda en Moreno puede quedar tapada por un saldo
+      // a favor en Morón (el neto da cero) y el proveedor se borra con esa deuda todavía pendiente.
+      const conSaldo = SUCURSALES.some((s) => saldo('proveedor', id, s) !== 0);
+      if (conSaldo) falla('No se puede eliminar: tiene saldo en cuenta corriente en alguna sucursal');
       db.run('UPDATE proveedores SET activo = 0 WHERE id = ?', id);
       return { ok: true };
     });
@@ -532,6 +573,12 @@ export function crearApi(db) {
   ruta('DELETE', '/api/caja/:id', ({ id, sucursal }) => {
     const m = db.get('SELECT * FROM caja WHERE id = ? AND sucursal = ?', id, sucursal) || falla('Movimiento inexistente', 404);
     if (m.ref_tipo) falla('Este movimiento viene de otra operación: anulá esa operación');
+    // Si este movimiento ya quedó contado dentro de un cierre de caja hecho, borrarlo ahora
+    // dejaría ese cierre (ya registrado con su "esperado" y su diferencia) sin poder reconstruirse:
+    // el efectivo recalculado ya no coincidiría con lo que se cerró y contó en su momento.
+    // Se compara por id (orden real de inserción) y no por fecha, que sólo tiene resolución de 1 segundo.
+    const cierrePosterior = db.get('SELECT id FROM cierres_caja WHERE sucursal = ? AND hasta_movimiento_id >= ?', sucursal, m.id);
+    if (cierrePosterior) falla('No se puede borrar: ya se hizo un cierre de caja después de este movimiento');
     db.run('DELETE FROM caja WHERE id = ?', id);
     return { ok: true };
   });
@@ -540,7 +587,11 @@ export function crearApi(db) {
     return db.tx(() => {
       const esperado = efectivoEnCaja(sucursal);
       const diferencia = contado - esperado;
-      db.run('INSERT INTO cierres_caja (fecha, sucursal, esperado, contado, diferencia, notas) VALUES (?, ?, ?, ?, ?, ?)', ahora(), sucursal, esperado, contado, diferencia, texto(b.notas, 200));
+      const hastaMovimientoId = db.get('SELECT COALESCE(MAX(id), 0) m FROM caja WHERE sucursal = ?', sucursal).m;
+      db.run(
+        'INSERT INTO cierres_caja (fecha, sucursal, esperado, contado, diferencia, notas, hasta_movimiento_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ahora(), sucursal, esperado, contado, diferencia, texto(b.notas, 200), hastaMovimientoId,
+      );
       if (diferencia) {
         movimientoCaja(sucursal, diferencia > 0 ? 'ingreso' : 'egreso', 'Ajuste de arqueo', 'Diferencia del cierre de caja', 'Efectivo', Math.abs(diferencia), 'cierre');
       }
