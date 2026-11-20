@@ -10,7 +10,10 @@ const SUCURSAL_POR_DEFECTO = SUCURSALES[0];
 // Todos los importes se guardan en centavos (enteros) para no arrastrar errores de redondeo.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT);
-CREATE TABLE IF NOT EXISTS sesiones (token TEXT PRIMARY KEY, expira INTEGER NOT NULL, sucursal TEXT NOT NULL DEFAULT '${SUCURSAL_POR_DEFECTO}');
+CREATE TABLE IF NOT EXISTS sesiones (token TEXT PRIMARY KEY, expira INTEGER NOT NULL, sucursal TEXT NOT NULL DEFAULT '${SUCURSAL_POR_DEFECTO}', email TEXT NOT NULL DEFAULT '');
+-- Sólo se usa si el sistema arranca con Google activado (ver IZEL_CORREOS_AUTORIZADOS): una contraseña propia por mail,
+-- en vez de la clave única de "config". Se crea sola la primera vez que ese mail inicia sesión.
+CREATE TABLE IF NOT EXISTS usuarios (email TEXT PRIMARY KEY, clave TEXT NOT NULL, creado TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS proveedores (
   id INTEGER PRIMARY KEY, nombre TEXT NOT NULL, contacto TEXT DEFAULT '', telefono TEXT DEFAULT '',
@@ -99,6 +102,8 @@ function migrarASucursales(raw) {
   for (const tabla of ['sesiones', 'clientes', 'ventas', 'caja', 'compras', 'cierres_caja', 'arreglos', 'movimientos_stock', 'cuenta_corriente']) {
     agregarColumna(tabla, 'sucursal', `TEXT NOT NULL DEFAULT '${SUCURSAL_POR_DEFECTO}'`);
   }
+  // Para bases de antes del login con Google: la sesión no tenía mail asociado.
+  agregarColumna('sesiones', 'email', `TEXT NOT NULL DEFAULT ''`);
   // Para bases de antes de guardar, en cada cierre, hasta qué movimiento de caja quedó contado
   // (se usa para no dejar borrar un movimiento que ya quedó dentro de un cierre hecho).
   agregarColumna('cierres_caja', 'hasta_movimiento_id', 'INTEGER NOT NULL DEFAULT 0');

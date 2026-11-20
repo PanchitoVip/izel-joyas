@@ -8,6 +8,10 @@ window.IZEL = {
   // Si el catálogo está en otro dominio, poner acá la dirección del sistema de gestión.
   api: '',
 
+  // Client ID de Google (no es secreto, va en el HTML). Vacío = no se muestra "¿Sos una de las dueñas?".
+  // Tiene que ser el mismo que GOOGLE_CLIENT_ID del sistema de gestión.
+  googleClientId: '',
+
   instagram: 'https://www.instagram.com/izeljoyas/',
   direccion: 'Merlo 2633, B1744OEO Moreno, Provincia de Buenos Aires',
   // Día de la semana (0 = domingo) -> horario en minutos desde las 00:00

@@ -1,9 +1,10 @@
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { abrirDb, hoy, SUCURSALES } from './db.js';
+import { abrirDb, ahora, hoy, SUCURSALES } from './db.js';
 import { crearApi, catalogoPublico, registrarConsulta, ErrorApi } from './api.js';
 
 const BASE = path.dirname(fileURLToPath(import.meta.url));
@@ -17,6 +18,14 @@ const HOST = process.env.HOST || '127.0.0.1';
 const DETRAS_DE_PROXY = process.env.TRUST_PROXY === '1';
 const DIAS_SESION = 14;
 const ORIGEN_CATALOGO = process.env.CATALOGO_ORIGEN || '*';
+
+// Login con Google: se activa solo si están las dos variables. Si no, el sistema sigue
+// funcionando exactamente como antes (clave única y código de instalación).
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const CORREOS_AUTORIZADOS = String(process.env.IZEL_CORREOS_AUTORIZADOS || '')
+  .split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+const GOOGLE_ACTIVO = Boolean(GOOGLE_CLIENT_ID && CORREOS_AUTORIZADOS.length);
+const GOOGLE_TOKENINFO_URL = process.env.GOOGLE_TOKENINFO_URL || 'https://oauth2.googleapis.com/tokeninfo';
 
 const db = abrirDb(DIR_DATOS, path.join(DIR_CATALOGO, 'data', 'productos.json'));
 const api = crearApi(db);
@@ -38,10 +47,10 @@ function claveCorrecta(clave, guardada) {
 }
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
-function crearSesion(req, res) {
+function crearSesion(req, res, email = '') {
   const token = crypto.randomBytes(32).toString('hex');
   const expira = Date.now() + DIAS_SESION * 864e5;
-  db.run('INSERT INTO sesiones (token, expira) VALUES (?, ?)', hashToken(token), expira);
+  db.run('INSERT INTO sesiones (token, expira, email) VALUES (?, ?, ?)', hashToken(token), expira, email);
   db.run('DELETE FROM sesiones WHERE expira < ?', Date.now());
   const seguro = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
   res.setHeader('set-cookie', `izel_sid=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${DIAS_SESION * 86400}${seguro}`);
@@ -57,6 +66,39 @@ function logueado(req) {
 function sucursalDeSesion(req) {
   const t = tokenDe(req);
   return db.get('SELECT sucursal FROM sesiones WHERE token = ? AND expira > ?', hashToken(t), Date.now())?.sucursal || SUCURSALES[0];
+}
+// Con login de Google, la sesión queda atada al mail con el que se entró.
+function emailDeSesion(req) {
+  const t = tokenDe(req);
+  return db.get('SELECT email FROM sesiones WHERE token = ? AND expira > ?', hashToken(t), Date.now())?.email || '';
+}
+
+// Valida un ID token de Google Identity Services contra el propio Google (sin ninguna
+// librería: un GET al endpoint público de verificación) y devuelve el mail si es válido,
+// es de este sistema (aud) y está en la lista de autorizados.
+function verificarCredencialGoogle(credential) {
+  return new Promise((resolver, rechazar) => {
+    if (!credential) return rechazar(new ErrorApi(400, 'Falta la credencial de Google'));
+    const urlVerificacion = new URL(GOOGLE_TOKENINFO_URL);
+    urlVerificacion.searchParams.set('id_token', credential);
+    // En producción esto siempre es https (el endpoint real de Google); el módulo http sólo
+    // se usa cuando las pruebas apuntan GOOGLE_TOKENINFO_URL a un servidor de prueba en http.
+    const cliente = urlVerificacion.protocol === 'http:' ? http : https;
+    cliente.get(urlVerificacion, (r) => {
+      const partes = [];
+      r.on('data', (c) => partes.push(c));
+      r.on('end', () => {
+        let datos;
+        try { datos = JSON.parse(Buffer.concat(partes).toString('utf8')); } catch { datos = {}; }
+        if (r.statusCode !== 200 || !datos.email) return rechazar(new ErrorApi(401, 'No se pudo verificar la cuenta de Google'));
+        if (datos.aud !== GOOGLE_CLIENT_ID) return rechazar(new ErrorApi(401, 'La cuenta de Google no es para este sistema'));
+        if (datos.email_verified !== 'true' && datos.email_verified !== true) return rechazar(new ErrorApi(401, 'El mail de Google no está verificado'));
+        const email = String(datos.email).toLowerCase();
+        if (!CORREOS_AUTORIZADOS.includes(email)) return rechazar(new ErrorApi(403, 'Esta cuenta no está autorizada'));
+        resolver(email);
+      });
+    }).on('error', () => rechazar(new ErrorApi(502, 'No se pudo contactar a Google')));
+  });
 }
 
 // Código que se muestra sólo en la consola del servidor: evita que un extraño cree la clave en un sistema recién publicado.
@@ -147,7 +189,7 @@ function copiaDiaria() {
 
 /* ---- Rutas ---- */
 async function rutaPublica(req, res, ruta) {
-  if (ruta !== '/api/catalogo' && ruta !== '/api/consultas') return false;
+  if (!['/api/catalogo', '/api/consultas', '/api/acceso-gestion'].includes(ruta)) return false;
   res.setHeader('access-control-allow-origin', ORIGEN_CATALOGO);
   res.setHeader('access-control-allow-headers', 'content-type');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
@@ -158,15 +200,36 @@ async function rutaPublica(req, res, ruta) {
     json(res, 200, { ok: true });
     return true;
   }
+  // El catálogo público pregunta esto para saber si le muestra o no el link a gestión:
+  // no crea sesión ni toca contraseñas, sólo confirma si ese mail de Google está autorizado.
+  if (ruta === '/api/acceso-gestion' && req.method === 'POST') {
+    if (!GOOGLE_ACTIVO) { json(res, 200, { autorizada: false }); return true; }
+    try {
+      await verificarCredencialGoogle(String((await leerJson(req, 5000)).credential || ''));
+      json(res, 200, { autorizada: true });
+    } catch {
+      json(res, 200, { autorizada: false });
+    }
+    return true;
+  }
   throw new ErrorApi(405, 'Método no permitido');
 }
 
 async function rutaSesion(req, res, ruta) {
   if (ruta === '/api/sesion' && req.method === 'GET') {
-    json(res, 200, { configurado: Boolean(db.conf('clave')), logueado: logueado(req), sucursal: logueado(req) ? sucursalDeSesion(req) : null });
+    const estaLogueado = logueado(req);
+    json(res, 200, {
+      configurado: GOOGLE_ACTIVO || Boolean(db.conf('clave')),
+      logueado: estaLogueado,
+      sucursal: estaLogueado ? sucursalDeSesion(req) : null,
+      google: GOOGLE_ACTIVO,
+      googleClientId: GOOGLE_ACTIVO ? GOOGLE_CLIENT_ID : null,
+      email: estaLogueado ? emailDeSesion(req) : null,
+    });
     return true;
   }
   if (ruta === '/api/instalar' && req.method === 'POST') {
+    if (GOOGLE_ACTIVO) throw new ErrorApi(404, 'Ruta inexistente');
     if (db.conf('clave')) throw new ErrorApi(409, 'El sistema ya tiene contraseña');
     if (!limite(`login:${ipDe(req)}`, 5, 9e5)) throw new ErrorApi(429, 'Demasiados intentos. Probá en 15 minutos');
     const b = await leerJson(req);
@@ -179,6 +242,7 @@ async function rutaSesion(req, res, ruta) {
     return true;
   }
   if (ruta === '/api/login' && req.method === 'POST') {
+    if (GOOGLE_ACTIVO) throw new ErrorApi(404, 'Ruta inexistente');
     const clave = `login:${ipDe(req)}`;
     if (!limite(clave, 5, 9e5)) throw new ErrorApi(429, 'Demasiados intentos. Probá en 15 minutos');
     const b = await leerJson(req);
@@ -186,6 +250,30 @@ async function rutaSesion(req, res, ruta) {
     if (!guardada || !claveCorrecta(String(b.clave || ''), guardada)) throw new ErrorApi(401, 'Contraseña incorrecta');
     intentos.delete(clave);
     crearSesion(req, res);
+    json(res, 200, { ok: true });
+    return true;
+  }
+  if (ruta === '/api/login-google' && req.method === 'POST') {
+    if (!GOOGLE_ACTIVO) throw new ErrorApi(404, 'Ruta inexistente');
+    const b = await leerJson(req);
+    const email = await verificarCredencialGoogle(String(b.credential || ''));
+    const clave = `login:${email}`;
+    if (!limite(clave, 5, 9e5)) throw new ErrorApi(429, 'Demasiados intentos. Probá en 15 minutos');
+    const fila = db.get('SELECT clave FROM usuarios WHERE email = ?', email);
+    if (!fila) {
+      // Primera vez que entra este mail: todavía no eligió contraseña.
+      if (!b.clave) { json(res, 200, { email, nueva: true }); return true; }
+      if (String(b.clave).length < 8) throw new ErrorApi(400, 'La contraseña debe tener al menos 8 caracteres');
+      db.run('INSERT INTO usuarios (email, clave, creado) VALUES (?, ?, ?)', email, hashClave(b.clave), ahora());
+      intentos.delete(clave);
+      crearSesion(req, res, email);
+      json(res, 200, { ok: true });
+      return true;
+    }
+    if (!b.clave) { json(res, 200, { email, nueva: false }); return true; }
+    if (!claveCorrecta(String(b.clave), fila.clave)) throw new ErrorApi(401, 'Contraseña incorrecta');
+    intentos.delete(clave);
+    crearSesion(req, res, email);
     json(res, 200, { ok: true });
     return true;
   }
@@ -209,8 +297,17 @@ async function rutaPrivada(req, res, ruta, url) {
   }
   if (ruta === '/api/clave' && req.method === 'POST') {
     const b = await leerJson(req);
-    if (!claveCorrecta(String(b.actual || ''), db.conf('clave'))) throw new ErrorApi(403, 'La contraseña actual no es correcta');
     if (String(b.nueva || '').length < 8) throw new ErrorApi(400, 'La contraseña debe tener al menos 8 caracteres');
+    if (GOOGLE_ACTIVO) {
+      const email = emailDeSesion(req);
+      const fila = db.get('SELECT clave FROM usuarios WHERE email = ?', email);
+      if (!fila || !claveCorrecta(String(b.actual || ''), fila.clave)) throw new ErrorApi(403, 'La contraseña actual no es correcta');
+      db.run('UPDATE usuarios SET clave = ? WHERE email = ?', hashClave(b.nueva), email);
+      db.run('DELETE FROM sesiones WHERE email = ?', email);
+      crearSesion(req, res, email);
+      return json(res, 200, { ok: true });
+    }
+    if (!claveCorrecta(String(b.actual || ''), db.conf('clave'))) throw new ErrorApi(403, 'La contraseña actual no es correcta');
     db.setConf('clave', hashClave(b.nueva));
     db.run('DELETE FROM sesiones');
     crearSesion(req, res);
@@ -241,7 +338,12 @@ async function rutaPrivada(req, res, ruta, url) {
   return json(res, 200, api(req.method, ruta, Object.fromEntries(url.searchParams), cuerpo, sucursalDeSesion(req)));
 }
 
-const CSP_ADMIN = "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+// Con Google activado hace falta poder cargar su script, su hoja de estilos y los estilos que
+// pone al vuelo sobre el botón (no hay forma de evitar el 'unsafe-inline' ahí: el botón de Google
+// no se puede armar con hash ni nonce), y mostrarlo en un iframe propio.
+const CSP_ADMIN = GOOGLE_ACTIVO
+  ? "default-src 'self'; img-src 'self' data: blob:; style-src 'self' https://accounts.google.com 'unsafe-inline'; script-src 'self' https://accounts.google.com; frame-src https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+  : "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 async function atender(req, res) {
   const url = new URL(req.url, 'http://local');
@@ -291,7 +393,8 @@ servidor.listen(PUERTO, HOST, () => {
   console.log(`\n  Izel Joyas funcionando`);
   console.log(`  Catálogo: http://localhost:${PUERTO}/`);
   console.log(`  Gestión:  http://localhost:${PUERTO}/gestion/\n`);
-  if (!db.conf('clave')) console.log(`  Código de instalación (se pide una sola vez): ${codigoInstalacion()}\n`);
+  if (GOOGLE_ACTIVO) console.log(`  Acceso con Google activado (${CORREOS_AUTORIZADOS.length} mail${CORREOS_AUTORIZADOS.length === 1 ? '' : 'es'} autorizado${CORREOS_AUTORIZADOS.length === 1 ? '' : 's'})\n`);
+  else if (!db.conf('clave')) console.log(`  Código de instalación (se pide una sola vez): ${codigoInstalacion()}\n`);
   copiaDiaria();
   setInterval(copiaDiaria, 6 * 36e5).unref();
 });

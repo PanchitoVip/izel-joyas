@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -70,7 +71,7 @@ test('la instalación exige el código y una clave larga', async () => {
   assert.equal((await pedir('POST', '/api/instalar', { codigo: CODIGO, clave: 'corta' })).status, 400);
   await ok('POST', '/api/instalar', { codigo: CODIGO, clave: CLAVE });
   assert.equal((await pedir('POST', '/api/instalar', { codigo: CODIGO, clave: CLAVE })).status, 409);
-  assert.deepEqual((await ok('GET', '/api/sesion')), { configurado: true, logueado: true, sucursal: 'Moreno' });
+  assert.deepEqual((await ok('GET', '/api/sesion')), { configurado: true, logueado: true, sucursal: 'Moreno', google: false, googleClientId: null, email: '' });
 });
 
 test('con IZEL_CLAVE_INICIAL el sistema arranca con esa clave ya puesta, sin pedir código', async () => {
@@ -87,7 +88,7 @@ test('con IZEL_CLAVE_INICIAL el sistema arranca con esa clave ya puesta, sin ped
       try { await fetch(`${urlBase}/api/sesion`); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
     }
     const sesion = await (await fetch(`${urlBase}/api/sesion`)).json();
-    assert.deepEqual(sesion, { configurado: true, logueado: false, sucursal: null });
+    assert.deepEqual(sesion, { configurado: true, logueado: false, sucursal: null, google: false, googleClientId: null, email: null });
     const rInstalar = await fetch(`${urlBase}/api/instalar`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -355,7 +356,7 @@ test('la copia de seguridad descarga una base válida', async () => {
 });
 
 test('Moreno y Morón no se pisan: clientes, stock y caja quedan separados por sucursal', async () => {
-  assert.deepEqual(await ok('GET', '/api/sesion'), { configurado: true, logueado: true, sucursal: 'Moreno' });
+  assert.deepEqual(await ok('GET', '/api/sesion'), { configurado: true, logueado: true, sucursal: 'Moreno', google: false, googleClientId: null, email: '' });
 
   const clienteMoreno = (await ok('POST', '/api/clientes', { nombre: 'Cliente Moreno' })).id;
   await ok('POST', `/api/productos/${prod.id}/ajuste`, { cantidad: 5, motivo: 'Carga Moreno' });
@@ -491,4 +492,102 @@ test('una base creada antes de separar por sucursal migra sus datos a Moreno', (
 
   db.raw.close();
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('con Google activado: sólo entran los mails autorizados, cada uno con su propia contraseña', async () => {
+  const AUD = 'test-client-id.apps.googleusercontent.com';
+  const TOKENS = {
+    'tok-duena1': { aud: AUD, email: 'duena1@gmail.com', email_verified: 'true' },
+    'tok-duena2': { aud: AUD, email: 'duena2@gmail.com', email_verified: 'true' },
+    'tok-no-autorizada': { aud: AUD, email: 'otra@gmail.com', email_verified: 'true' },
+    'tok-aud-mala': { aud: 'otro-client-id', email: 'duena1@gmail.com', email_verified: 'true' },
+    'tok-no-verificado': { aud: AUD, email: 'duena1@gmail.com', email_verified: 'false' },
+  };
+  // Simula el endpoint de verificación de Google: responde con las "claims" fijadas arriba según el id_token recibido.
+  const stub = http.createServer((req, res) => {
+    const datos = TOKENS[new URL(req.url, 'http://local').searchParams.get('id_token')];
+    res.writeHead(datos ? 200 : 400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(datos || { error: 'invalid_token' }));
+  });
+  await new Promise((r) => stub.listen(0, '127.0.0.1', r));
+  const puertoStub = stub.address().port;
+
+  const puerto = 3113;
+  const urlBase = `http://127.0.0.1:${puerto}`;
+  const datos = fs.mkdtempSync(path.join(os.tmpdir(), 'izel-test-google-'));
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BASE,
+    env: {
+      ...process.env, PORT: String(puerto), IZEL_DATOS: datos,
+      GOOGLE_CLIENT_ID: AUD, IZEL_CORREOS_AUTORIZADOS: 'Duena1@gmail.com, duena2@gmail.com',
+      GOOGLE_TOKENINFO_URL: `http://127.0.0.1:${puertoStub}`,
+    },
+    stdio: 'ignore',
+  });
+  let cookie = '';
+  const pedirG = async (metodo, ruta, cuerpo, conSesion = true) => {
+    const r = await fetch(`${urlBase}${ruta}`, {
+      method: metodo,
+      headers: cuerpo !== undefined ? { 'content-type': 'application/json', ...(conSesion && cookie ? { cookie } : {}) } : (conSesion && cookie ? { cookie } : {}),
+      body: cuerpo !== undefined ? JSON.stringify(cuerpo) : undefined,
+    });
+    const set = r.headers.get('set-cookie');
+    if (set) cookie = set.split(';')[0];
+    const texto = await r.text();
+    let data; try { data = JSON.parse(texto); } catch { data = texto; }
+    return { status: r.status, data };
+  };
+
+  try {
+    for (let i = 0; i < 50; i += 1) {
+      try { await fetch(`${urlBase}/api/sesion`); break; } catch { await new Promise((res) => setTimeout(res, 100)); }
+    }
+
+    // La lista de autorizados se compara sin importar mayúsculas: "Duena1@gmail.com" en la variable de entorno
+    // igual reconoce el mail que Google devuelve en minúsculas.
+    assert.deepEqual((await pedirG('GET', '/api/sesion')).data, {
+      configurado: true, logueado: false, sucursal: null, google: true, googleClientId: AUD, email: null,
+    });
+
+    assert.equal((await pedirG('POST', '/api/instalar', { codigo: 'x', clave: 'cualquiera1' })).status, 404, 'la clave única vieja queda deshabilitada');
+    assert.equal((await pedirG('POST', '/api/login', { clave: 'cualquiera1' })).status, 404);
+
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-no-autorizada' })).status, 403);
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-aud-mala' })).status, 401);
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-no-verificado' })).status, 401);
+    assert.equal((await pedirG('POST', '/api/acceso-gestion', { credential: 'tok-no-autorizada' }, false)).data.autorizada, false);
+    assert.equal((await pedirG('POST', '/api/acceso-gestion', { credential: 'tok-duena1' }, false)).data.autorizada, true);
+
+    // Primera vez con un mail autorizado: sin clave todavía no hay sesión, sólo se informa que hay que crear una.
+    const primera = await pedirG('POST', '/api/login-google', { credential: 'tok-duena1' });
+    assert.deepEqual(primera.data, { email: 'duena1@gmail.com', nueva: true });
+    assert.equal((await pedirG('GET', '/api/sesion')).data.logueado, false, 'todavía no inició sesión, sólo consultó');
+
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena1', clave: 'corta' })).status, 400);
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena1', clave: 'clave-de-duena-1' })).status, 200);
+    assert.deepEqual((await pedirG('GET', '/api/sesion')).data, {
+      configurado: true, logueado: true, sucursal: 'Moreno', google: true, googleClientId: AUD, email: 'duena1@gmail.com',
+    });
+
+    await pedirG('POST', '/api/logout', {});
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena1', clave: 'mala' })).status, 401, 'ya tiene clave puesta: ahora se exige, no se vuelve a crear');
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena1', clave: 'clave-de-duena-1' })).status, 200);
+
+    // Cambiar la contraseña sólo afecta al mail de la sesión actual, no a la otra dueña.
+    assert.equal((await pedirG('POST', '/api/clave', { actual: 'clave-de-duena-1', nueva: 'clave-nueva-de-duena-1' })).status, 200);
+    await pedirG('POST', '/api/logout', {});
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena1', clave: 'clave-de-duena-1' })).status, 401, 'la clave vieja ya no sirve');
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena1', clave: 'clave-nueva-de-duena-1' })).status, 200);
+    await pedirG('POST', '/api/logout', {});
+
+    const otraPrimera = await pedirG('POST', '/api/login-google', { credential: 'tok-duena2' });
+    assert.deepEqual(otraPrimera.data, { email: 'duena2@gmail.com', nueva: true });
+    assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena2', clave: 'clave-de-duena-2' })).status, 200);
+    assert.equal((await pedirG('GET', '/api/sesion')).data.email, 'duena2@gmail.com', 'cada una entra con la suya, sin mezclarse');
+  } finally {
+    proc.kill();
+    stub.close();
+    await new Promise((r) => setTimeout(r, 300));
+    fs.rmSync(datos, { recursive: true, force: true });
+  }
 });

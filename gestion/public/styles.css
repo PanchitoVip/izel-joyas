@@ -123,9 +123,10 @@ dialog#modal::backdrop { background: rgba(44, 26, 32, .55); }
 .foto-prev { width: 96px; height: 96px; border-radius: 10px; object-fit: cover; background: var(--bg); }
 
 .login { display: grid; place-items: center; min-height: 100dvh; padding: 1rem; background: var(--wine); }
-.login form { display: grid; gap: .8rem; width: min(360px, 100%); padding: 1.6rem; border-radius: 16px; background: var(--surface); }
+.login form, .login .tarjeta { display: grid; gap: .8rem; width: min(360px, 100%); padding: 1.6rem; border-radius: 16px; background: var(--surface); }
 .login img { width: 96px; height: 96px; margin: 0 auto; border-radius: 50%; }
 .login h1 { text-align: center; }
+.google-btn { display: grid; justify-content: center; margin: .3rem 0; }
 .error { color: var(--bad); font-size: .92rem; }
 
 .toast { position: fixed; bottom: 1rem; left: 50%; z-index: 50; max-width: calc(100% - 2rem); padding: .55rem 1.1rem; transform: translateX(-50%); border-radius: 10px; background: var(--ink); color: #fff; }

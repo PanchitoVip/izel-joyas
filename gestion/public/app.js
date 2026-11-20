@@ -41,7 +41,7 @@ async function api(metodo, ruta, cuerpo) {
     body: cuerpo !== undefined ? JSON.stringify(cuerpo) : undefined,
   });
   const data = await r.json().catch(() => ({}));
-  if (r.status === 401 && ruta !== 'login') { pantallaAcceso(true); throw new Error('Tenés que iniciar sesión'); }
+  if (r.status === 401 && ruta !== 'login' && ruta !== 'login-google') { pantallaAcceso(true); throw new Error('Tenés que iniciar sesión'); }
   if (!r.ok) { const e = new Error(data.error || 'No se pudo completar la operación'); e.status = r.status; throw e; }
   return data;
 }
@@ -81,8 +81,21 @@ function confirmar(titulo, texto, etiqueta = 'Confirmar') {
 const opciones = (lista, sel) => lista.map((o) => h`<option value="${o}" ${o === sel ? 'selected' : ''}>${o}</option>`);
 
 /* ---- Acceso ---- */
+function cargarScript(src) {
+  return new Promise((resolver, rechazar) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolver();
+    const s = document.createElement('script');
+    s.src = src; s.async = true; s.defer = true;
+    s.onload = () => resolver();
+    s.onerror = () => rechazar(new Error('No se pudo cargar el inicio de sesión de Google'));
+    document.head.appendChild(s);
+  });
+}
+
 async function pantallaAcceso(vencida = false) {
-  const { configurado } = await fetch('/api/sesion').then((r) => r.json());
+  const s = await fetch('/api/sesion').then((r) => r.json());
+  if (s.google) return pantallaAccesoGoogle(s, vencida);
+  const { configurado } = s;
   $('#app').innerHTML = h`<div class="login"><form id="acceso">
     <img src="/img/logo.jpg" alt="Izel Joyas">
     <h1>${configurado ? 'Gestión Izel Joyas' : 'Crear contraseña'}</h1>
@@ -97,6 +110,49 @@ async function pantallaAcceso(vencida = false) {
     e.preventDefault();
     try {
       await api('POST', configurado ? 'login' : 'instalar', leerForm(e.target));
+      iniciar();
+    } catch (err) { $('#err').textContent = err.message; }
+  });
+}
+
+async function pantallaAccesoGoogle(s, vencida) {
+  $('#app').innerHTML = h`<div class="login"><div class="tarjeta">
+    <img src="/img/logo.jpg" alt="Izel Joyas">
+    <h1>Gestión Izel Joyas</h1>
+    ${vencida && h`<p class="hint">Tu sesión terminó. Volvé a entrar.</p>`}
+    <p class="hint">Entrá con la cuenta de Google autorizada.</p>
+    <div id="gBtn" class="google-btn"></div>
+    <p class="error" id="err" role="alert"></p>
+  </div></div>`;
+  try {
+    await cargarScript('https://accounts.google.com/gsi/client');
+  } catch (err) {
+    $('#err').textContent = err.message;
+    return;
+  }
+  window.google.accounts.id.initialize({
+    client_id: s.googleClientId,
+    callback: intentar(async (resp) => {
+      const r = await api('POST', 'login-google', { credential: resp.credential });
+      if (r.ok) iniciar(); else pantallaClaveGoogle(resp.credential, r.email, r.nueva);
+    }),
+  });
+  window.google.accounts.id.renderButton($('#gBtn'), { theme: 'outline', size: 'large', text: 'signin_with', width: 280 });
+}
+
+function pantallaClaveGoogle(credential, email, nueva) {
+  $('#app').innerHTML = h`<div class="login"><form id="acceso">
+    <img src="/img/logo.jpg" alt="Izel Joyas">
+    <h1>${nueva ? 'Creá tu contraseña' : 'Gestión Izel Joyas'}</h1>
+    <p class="hint">${nueva ? `Es la primera vez que entrás con ${email}. Elegí una contraseña propia, de al menos 8 caracteres.` : `Hola de nuevo, ${email}.`}</p>
+    <label class="f">Contraseña<input name="clave" type="password" required minlength="${nueva ? 8 : 1}" autocomplete="${nueva ? 'new-password' : 'current-password'}" autofocus></label>
+    <p class="error" id="err" role="alert"></p>
+    <button class="btn primary">${nueva ? 'Crear y entrar' : 'Entrar'}</button>
+  </form></div>`;
+  $('#acceso').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api('POST', 'login-google', { credential, ...leerForm(e.target) });
       iniciar();
     } catch (err) { $('#err').textContent = err.message; }
   });

@@ -65,6 +65,30 @@ Tiene que estar detrás de HTTPS. El código de instalación aparece en los logs
 
 Si se agrega `IZEL_CLAVE_INICIAL=la-contraseña-que-quieras`, el sistema arranca ya con esa contraseña puesta: no pide código de instalación y nadie que entre primero puede elegir la suya. Sirve para que un disco que se borra solo (plan gratis, cada redeploy) no vuelva a pedir el código cada vez.
 
+### Entrar con Google (opcional)
+
+Si se agregan estas dos variables, la gestión deja de usar la clave única y pide **iniciar sesión con Google**, restringido a una lista de mails, y además una contraseña propia por persona (se crea sola la primera vez que esa persona entra):
+
+```
+GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+IZEL_CORREOS_AUTORIZADOS=duena1@gmail.com,duena2@gmail.com
+```
+
+Si no se definen, el sistema sigue funcionando exactamente igual que siempre (clave única).
+
+**Cómo conseguir el `GOOGLE_CLIENT_ID`** (una sola vez, no hace falta un "Client Secret"):
+1. Entrar a [console.cloud.google.com](https://console.cloud.google.com), crear un proyecto (cualquier nombre, por ejemplo "Izel Joyas").
+2. "APIs y servicios" > "Pantalla de consentimiento de OAuth": tipo **Externo**, completar nombre y mail de contacto. No hace falta publicarla ni que Google la revise para este uso.
+3. "APIs y servicios" > "Credenciales" > "Crear credenciales" > **"ID de cliente de OAuth"**, tipo **"Aplicación web"**.
+4. En "Orígenes de JavaScript autorizados" agregar el dominio donde va a vivir el sistema (por ejemplo `https://izeljoyas.com.ar`) y, para probarlo en la compu, `http://localhost:3000`.
+5. Copiar el "ID de cliente" que queda (termina en `.apps.googleusercontent.com`) y usarlo como `GOOGLE_CLIENT_ID`. Ese mismo valor va también en `catalogo/config.js` (`googleClientId`), para que el catálogo pueda mostrar el link "Ir a gestión" a quien corresponda — no es un dato secreto, está pensado para ir en el HTML.
+
+**Si alguien se olvida su contraseña personal** (con el sistema apagado, sólo afecta a esa persona, no a la otra):
+```bash
+node -e "const {DatabaseSync:D}=require('node:sqlite');new D('gestion/data/izel.db').exec(\"DELETE FROM usuarios WHERE email = 'el-mail-de-esa-persona@gmail.com'\")"
+```
+Al volver a entrar con Google, el sistema le pide elegir una contraseña nueva.
+
 **Opción rápida: sólo el catálogo, gratis.** La carpeta `catalogo/` es un sitio estático: se puede subir a Netlify, Cloudflare Pages o GitHub Pages con el número cargado en `config.js`. Los productos salen de `data/productos.json`. Para conectarlo después a un sistema en otro dominio, poner su dirección en `api` de `config.js` y `CATALOGO_ORIGEN=https://dominio-del-catalogo` en el servidor.
 
 **Opción local: la gestión sólo en la compu del local.** Funciona con los `.bat`, pero el catálogo público no se actualizaría solo, y si la compu se rompe sólo quedan las copias que se hayan guardado afuera.

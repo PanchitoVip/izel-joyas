@@ -236,6 +236,47 @@
     $('estadoLocal').classList.toggle('on', Boolean(on));
   }
 
+  /* ---- Acceso de las dueñas: nadie más ve ni nota esto ---- */
+  function cargarScriptGoogle() {
+    return new Promise((resolver, rechazar) => {
+      if (document.querySelector('script[src="https://accounts.google.com/gsi/client"]')) return resolver();
+      const s = document.createElement('script');
+      s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.defer = true;
+      s.onload = () => resolver();
+      s.onerror = () => rechazar(new Error('No se pudo cargar Google'));
+      document.head.appendChild(s);
+    });
+  }
+  function iniciarAccesoDuena() {
+    if (!cfg.googleClientId) return;
+    const link = $('accesoDuena');
+    const irGestion = $('irGestion');
+    const cont = $('gBtnCatalogo');
+    irGestion.href = `${cfg.api || ''}/gestion/`;
+    link.hidden = false;
+    link.addEventListener('click', async (e) => {
+      e.preventDefault();
+      link.hidden = true;
+      cont.hidden = false;
+      try { await cargarScriptGoogle(); } catch { link.hidden = false; cont.hidden = true; return; }
+      window.google.accounts.id.initialize({
+        client_id: cfg.googleClientId,
+        callback: async (resp) => {
+          cont.hidden = true;
+          try {
+            const r = await fetch(`${cfg.api || ''}/api/acceso-gestion`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ credential: resp.credential }),
+            });
+            const datos = await r.json();
+            if (datos.autorizada) irGestion.hidden = false; else link.hidden = false;
+          } catch { link.hidden = false; }
+        },
+      });
+      window.google.accounts.id.renderButton(cont, { theme: 'outline', size: 'medium', text: 'signin_with' });
+    });
+  }
+
   /* ---- Inicio ---- */
   async function iniciar() {
     pintarEstado();
@@ -247,6 +288,7 @@
     pintarCategorias();
     pintarProductos();
     pintarCarrito();
+    iniciarAccesoDuena();
     const p = productos.find((x) => `#${x.codigo}` === location.hash);
     if (p) abrirDetalle(p);
   }
