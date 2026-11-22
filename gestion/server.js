@@ -194,10 +194,23 @@ function copiaDe(destino) {
   db.raw.prepare('VACUUM INTO ?').run(destino);
 }
 function copiaDiaria() {
-  fs.mkdirSync(DIR_BACKUPS, { recursive: true });
-  const destino = path.join(DIR_BACKUPS, `izel-${hoy()}.db`);
-  if (!fs.existsSync(destino)) copiaDe(destino);
-  for (const viejo of fs.readdirSync(DIR_BACKUPS).sort().slice(0, -14)) fs.rmSync(path.join(DIR_BACKUPS, viejo));
+  // Nunca deja que un backup que falla (disco lleno, etc.) tire abajo el servidor: si algo sale
+  // mal acá, sólo se pierde la copia de hoy, no las ventas ni el catálogo. Se escribe primero a un
+  // nombre temporal y recién se renombra al definitivo si VACUUM INTO terminó bien, para que un
+  // backup cortado a la mitad no quede "dado por hecho" durante 14 días.
+  try {
+    fs.mkdirSync(DIR_BACKUPS, { recursive: true });
+    const destino = path.join(DIR_BACKUPS, `izel-${hoy()}.db`);
+    if (!fs.existsSync(destino)) {
+      const temporal = `${destino}.tmp`;
+      copiaDe(temporal);
+      fs.renameSync(temporal, destino);
+    }
+    const copias = fs.readdirSync(DIR_BACKUPS).filter((n) => n.endsWith('.db')).sort();
+    for (const vieja of copias.slice(0, -14)) fs.rmSync(path.join(DIR_BACKUPS, vieja));
+  } catch (e) {
+    console.error('La copia de seguridad diaria falló (se reintenta en la próxima corrida):', e.message);
+  }
 }
 
 /* ---- Catálogo desde Google Drive ---- */

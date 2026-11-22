@@ -3,7 +3,6 @@ import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import sharp from 'sharp';
 import { ahora } from './db.js';
 import { siguienteCodigo } from './api.js';
 import { extensionImagen } from './imagenes.js';
@@ -127,7 +126,16 @@ function descargarImagenDrive(accessToken, fileId, { driveApiUrl }, maxBytes = 8
 // cámara/celular). Achicarlas antes de guardarlas es lo que de verdad cuida el disco: una carpeta
 // grande del proveedor no tiene por qué llenarlo, sea cual sea su tamaño original. Mismo criterio
 // que ya usa la subida manual de fotos (máx. 1000px, JPEG calidad 85), pero del lado del servidor.
+// `sharp` se carga recién acá, no al importar este módulo: es la única dependencia de npm del
+// proyecto, y si por lo que sea no se pudiera cargar (falló su instalación en el hosting, falta
+// alguna librería del sistema operativo, etc.), eso tiene que apagar sólo la sincronización con
+// Drive, nunca tirar abajo todo el servidor (ventas, caja, catálogo), que no dependen de esto.
+let sharpCargado;
 async function comprimirImagen(binario) {
+  sharpCargado ??= import('sharp').then((m) => m.default).catch((e) => {
+    throw new Error(`No se pudo cargar la librería para comprimir imágenes (sharp): ${e.message}`);
+  });
+  const sharp = await sharpCargado;
   return sharp(binario).rotate().resize(1000, 1000, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
 }
 
