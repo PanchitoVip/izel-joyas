@@ -3,6 +3,7 @@ import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import sharp from 'sharp';
 import { ahora } from './db.js';
 import { siguienteCodigo } from './api.js';
 import { extensionImagen } from './imagenes.js';
@@ -122,6 +123,14 @@ function descargarImagenDrive(accessToken, fileId, { driveApiUrl }, maxBytes = 8
   });
 }
 
+// Las fotos del proveedor vienen pesadas (varios cientos de KB, a veces más de 1MB, tamaño de
+// cámara/celular). Achicarlas antes de guardarlas es lo que de verdad cuida el disco: una carpeta
+// grande del proveedor no tiene por qué llenarlo, sea cual sea su tamaño original. Mismo criterio
+// que ya usa la subida manual de fotos (máx. 1000px, JPEG calidad 85), pero del lado del servidor.
+async function comprimirImagen(binario) {
+  return sharp(binario).rotate().resize(1000, 1000, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+}
+
 // Idempotente: se puede correr todas las veces que haga falta (a demanda o por el programador
 // semanal en server.js) sin duplicar productos ni pisar lo que la dueña ya cargó a mano.
 export async function sincronizar(db, opts) {
@@ -135,6 +144,7 @@ export async function sincronizar(db, opts) {
   const omitidos = [];
   let nuevos = 0;
   let marcadosARevisar = 0;
+  let sinEspacio = false;
   try {
     const accessToken = await obtenerAccessToken(refreshToken, opts);
     const encontrados = await listarImagenesDrive(accessToken, folderId, exclusiones, opts);
@@ -144,8 +154,18 @@ export async function sincronizar(db, opts) {
       const binario = await descargarImagenDrive(accessToken, img.id, opts);
       const ext = extensionImagen(binario);
       if (!ext) { omitidos.push(img.nombre); continue; }
-      const nombreArchivo = crypto.randomBytes(12).toString('hex') + ext;
-      fs.writeFileSync(path.join(opts.dirUploads, nombreArchivo), binario);
+      const nombreArchivo = `${crypto.randomBytes(12).toString('hex')}.jpg`;
+      const comprimida = await comprimirImagen(binario);
+      try {
+        fs.writeFileSync(path.join(opts.dirUploads, nombreArchivo), comprimida);
+      } catch (e) {
+        // Si en algún momento el disco se llena igual (una carpeta enorme, un disco chico):
+        // frenar acá, dejar lo que ya se sincronizó, y retomar justo donde quedó la próxima vez
+        // (las fotos ya guardadas no se vuelven a descargar, por el chequeo de drive_file_id de arriba).
+        if (e.code !== 'ENOSPC') throw e;
+        sinEspacio = true;
+        break;
+      }
       db.run(
         `INSERT INTO productos (codigo, nombre, categoria, material, costo, precio, imagen, publicado, revisar, drive_file_id)
          VALUES (?, '', ?, '', 0, 0, ?, 0, 1, ?)`,
@@ -162,8 +182,10 @@ export async function sincronizar(db, opts) {
       }
     }
     db.setConf('drive_ultima_sincronizacion', ahora());
-    db.setConf('drive_ultimo_error', '');
-    return { ok: true, nuevos, marcados_a_revisar: marcadosARevisar, omitidos, encontrados: encontrados.length };
+    db.setConf('drive_ultimo_error', sinEspacio ? `Se quedó sin espacio en el disco: trajo ${nuevos} de ${encontrados.length} fotos. Libera espacio o agrandá el disco para traer el resto.` : '');
+    return {
+      ok: true, nuevos, marcados_a_revisar: marcadosARevisar, omitidos, encontrados: encontrados.length, sin_espacio: sinEspacio,
+    };
   } catch (e) {
     db.setConf('drive_ultimo_error', e.message || 'Error desconocido al sincronizar con Google Drive');
     throw e;

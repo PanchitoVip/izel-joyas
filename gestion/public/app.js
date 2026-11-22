@@ -422,12 +422,21 @@ function tarjetaCatalogo(p) {
   </div>`;
 }
 
+function estadoDrive(a) {
+  if (a.drive_ultimo_error) return h`<span class="tag warn">Falló la última sincronización: ${a.drive_ultimo_error}</span>`;
+  if (!a.drive_ultima_sincronizacion) return 'Todavía no se sincronizó con Google Drive.';
+  return h`Última sincronización con Google Drive: ${fechaHora(a.drive_ultima_sincronizacion)}.`;
+}
+
 VISTAS.catalogo = async (v) => {
   const [lista, proveedores, s] = await Promise.all([api('GET', 'productos'), api('GET', 'proveedores'), api('GET', 'sesion')]);
+  const a = s.driveConectado ? await api('GET', 'ajustes') : null;
   v.innerHTML = h`
     <div class="head"><h1>Catálogo</h1><div class="head-actions">
       ${s.driveConectado ? h`<button class="btn" id="sincronizar" type="button">Sincronizar ahora</button>` : ''}</div></div>
     <p class="hint">Acá ves todas las fotos del catálogo. Los que dicen “Revisar” llegaron de Google Drive o tienen datos dudosos: tocá la foto para cargarles precio, costo y confirmar el nombre.</p>
+    ${a && h`<p class="hint" id="drive-estado">${estadoDrive(a)}</p>`}
+    <div class="barra" id="barra" hidden><i></i></div>
     <label class="check"><input type="checkbox" id="solo-revisar" ${filtroCatalogo.soloRevisar ? 'checked' : ''}> Mostrar sólo los que están a revisar</label>
     <datalist id="cats-catalogo">${op.categorias_producto.map((c) => h`<option value="${c}"></option>`)}</datalist>
     <p class="hint" id="cuenta"></p>
@@ -453,10 +462,18 @@ VISTAS.catalogo = async (v) => {
     if (!b) return;
     formProducto(lista.find((x) => x.id === Number(b.dataset.ver)), proveedores);
   });
-  $('#sincronizar')?.addEventListener('click', intentar(async () => {
-    const r = await api('POST', 'drive/sincronizar', {});
-    aviso(r.ok ? `Listo: ${r.nuevos} producto${r.nuevos === 1 ? '' : 's'} nuevo${r.nuevos === 1 ? '' : 's'}` : (r.motivo || 'No se pudo sincronizar'));
-    refrescar();
+  $('#sincronizar')?.addEventListener('click', intentar(async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = 'Sincronizando…';
+    $('#barra').hidden = false;
+    try {
+      const r = await api('POST', 'drive/sincronizar', {});
+      if (!r.ok) aviso(r.motivo || 'No se pudo sincronizar', true);
+      else if (r.sin_espacio) aviso(`Se quedó sin espacio: trajo ${r.nuevos} de ${r.encontrados} fotos. La próxima vez sigue donde quedó.`, true);
+      else aviso(`Listo: ${r.nuevos} producto${r.nuevos === 1 ? '' : 's'} nuevo${r.nuevos === 1 ? '' : 's'}`);
+    } finally {
+      refrescar();
+    }
   }));
 };
 

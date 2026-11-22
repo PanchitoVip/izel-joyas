@@ -4,3 +4,5 @@ gestion/data/
 *.db-shm
 *.db-wal
 *.zip
+
+node_modules/

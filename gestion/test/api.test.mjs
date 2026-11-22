@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import sharp from 'sharp';
 import { abrirDb } from '../db.js';
 
 const BASE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -599,7 +600,9 @@ test('con Google activado: sólo entran los mails autorizados, cada uno con su p
 });
 
 test('catálogo desde Google Drive: conecta, sincroniza, excluye Fornituras y no borra lo que ya no aparece', async () => {
-  const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 1, 2, 3, 4, 5]);
+  // Tiene que ser un JPEG de verdad (no sólo los bytes mágicos): drive.js ahora lo recomprime con
+  // sharp antes de guardarlo, para que las fotos del proveedor no inflen el disco.
+  const JPG = await sharp({ create: { width: 2200, height: 1800, channels: 3, background: { r: 180, g: 40, b: 90 } } }).jpeg().toBuffer();
   const NO_IMAGEN = Buffer.from('esto no es una imagen de verdad');
   // Imita la estructura real relevada a mano en la carpeta del proveedor: una raíz con una
   // subcarpeta "Fornituras" (se tiene que excluir entera) y una subcarpeta con fotos de verdad,
@@ -755,6 +758,8 @@ test('catálogo desde Google Drive: conecta, sincroniza, excluye Fornituras y no
       assert.ok(p.imagen.startsWith('uploads/'));
       const foto = await fetch(`${urlBase}/${p.imagen}`);
       assert.equal(foto.status, 200);
+      const metadata = await sharp(Buffer.from(await foto.arrayBuffer())).metadata();
+      assert.ok(metadata.width <= 1000 && metadata.height <= 1000, 'se achica a máx. 1000px antes de guardarla, aunque la original sea más grande');
     }
     assert.ok(!productos.some((p) => p.categoria === 'Fornituras'), 'nada de Fornituras se convirtió en producto');
 
