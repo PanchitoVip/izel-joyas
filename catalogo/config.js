@@ -10,7 +10,7 @@ window.IZEL = {
 
   // Client ID de Google (no es secreto, va en el HTML). Vacío = no se muestra "¿Sos una de las dueñas?".
   // Tiene que ser el mismo que GOOGLE_CLIENT_ID del sistema de gestión.
-  googleClientId: '',
+  googleClientId: '118008286323-i83ukkvl2cqk4os0dfk73gfm7c14ff80.apps.googleusercontent.com',
 
   instagram: 'https://www.instagram.com/izeljoyas/',
   direccion: 'Merlo 2633, B1744OEO Moreno, Provincia de Buenos Aires',
