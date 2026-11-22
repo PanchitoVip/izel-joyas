@@ -55,8 +55,14 @@ function aviso(texto, malo = false) {
   clearTimeout(temporizador);
   temporizador = setTimeout(() => { t.hidden = true; }, malo ? 5000 : 2600);
 }
+// Deshabilita el botón que disparó la acción mientras espera la respuesta del servidor
+// (cubre el click directo, el submit con Enter y las listas con un solo listener delegado
+// para varias filas), para que un doble clic o un Enter de más no repitan la operación.
 const intentar = (fn) => async (...a) => {
-  try { return await fn(...a); } catch (e) { aviso(e.message, true); return undefined; }
+  const e = a[0];
+  const boton = e?.submitter || e?.target?.closest?.('button') || e?.target?.querySelector?.('button:not([type=button])');
+  if (boton) boton.disabled = true;
+  try { return await fn(...a); } catch (err) { aviso(err.message, true); return undefined; } finally { if (boton) boton.disabled = false; }
 };
 
 /* ---- Modal ---- */
@@ -741,7 +747,7 @@ VISTAS.venta = async (v) => {
       } else if (e.status !== 409) aviso(e.message, true);
     }
   }
-  $('#cerrar').addEventListener('click', () => confirmarVenta());
+  $('#cerrar').addEventListener('click', intentar(() => confirmarVenta()));
   pintar();
 };
 
