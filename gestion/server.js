@@ -6,6 +6,8 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { abrirDb, ahora, hoy, SUCURSALES } from './db.js';
 import { crearApi, catalogoPublico, registrarConsulta, ErrorApi } from './api.js';
+import { extensionImagen } from './imagenes.js';
+import { sincronizar, intercambiarCodigoPorTokens } from './drive.js';
 
 const BASE = path.dirname(fileURLToPath(import.meta.url));
 const DIR_DATOS = path.resolve(process.env.IZEL_DATOS || path.join(BASE, 'data'));
@@ -26,6 +28,14 @@ const CORREOS_AUTORIZADOS = String(process.env.IZEL_CORREOS_AUTORIZADOS || '')
   .split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
 const GOOGLE_ACTIVO = Boolean(GOOGLE_CLIENT_ID && CORREOS_AUTORIZADOS.length);
 const GOOGLE_TOKENINFO_URL = process.env.GOOGLE_TOKENINFO_URL || 'https://oauth2.googleapis.com/tokeninfo';
+
+// Catálogo desde Google Drive: también opt-in, independiente del login con Google de arriba
+// (usa el mismo Client ID, pero necesita además el Client Secret porque pide un refresh token).
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const DRIVE_ACTIVO = Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+const GOOGLE_OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const GOOGLE_OAUTH_TOKEN_URL = process.env.GOOGLE_OAUTH_TOKEN_URL || 'https://oauth2.googleapis.com/token';
+const GOOGLE_DRIVE_API_URL = process.env.GOOGLE_DRIVE_API_URL || 'https://www.googleapis.com/drive/v3';
 
 const db = abrirDb(DIR_DATOS, path.join(DIR_CATALOGO, 'data', 'productos.json'));
 const api = crearApi(db);
@@ -131,6 +141,15 @@ setInterval(() => {
   for (const [k, e] of intentos) if (e.hasta < Date.now()) intentos.delete(k);
 }, 36e5).unref();
 
+// Estado de un solo uso del flujo OAuth de Google Drive (ver /api/drive/conectar y /callback):
+// la cookie de sesión es SameSite=Strict, así que no llega en la vuelta desde accounts.google.com
+// (navegación cross-site). Por eso esta autorización se valida con este token, no con la cookie.
+const estadosDrive = new Map();
+let sincronizandoDrive = false;
+setInterval(() => {
+  for (const [k, vencimiento] of estadosDrive) if (vencimiento < Date.now()) estadosDrive.delete(k);
+}, 6e4).unref();
+
 /* ---- Utilidades HTTP ---- */
 function json(res, status, data) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -163,12 +182,6 @@ function servirArchivo(res, raiz, relativo, extra = {}) {
   fs.createReadStream(ruta).pipe(res);
   return true;
 }
-function extensionImagen(b) {
-  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return '.jpg';
-  if (b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return '.png';
-  if (b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP') return '.webp';
-  return null;
-}
 function origenValido(req) {
   const origen = req.headers.origin;
   if (!origen) return true;
@@ -185,6 +198,23 @@ function copiaDiaria() {
   const destino = path.join(DIR_BACKUPS, `izel-${hoy()}.db`);
   if (!fs.existsSync(destino)) copiaDe(destino);
   for (const viejo of fs.readdirSync(DIR_BACKUPS).sort().slice(0, -14)) fs.rmSync(path.join(DIR_BACKUPS, viejo));
+}
+
+/* ---- Catálogo desde Google Drive ---- */
+// Revisa una vez por día si es sábado y todavía no sincronizó hoy; si hace falta, dispara
+// sincronizar() en segundo plano (no bloquea el arranque ni el resto del servidor).
+function sincronizacionSemanal() {
+  if (!DRIVE_ACTIVO || sincronizandoDrive) return;
+  const h = hoy();
+  const esSabado = new Date(`${h}T12:00:00Z`).getUTCDay() === 6;
+  if (!esSabado || db.conf('drive_ultima_sincronizacion', '').slice(0, 10) === h) return;
+  sincronizandoDrive = true;
+  sincronizar(db, {
+    dirUploads: DIR_UPLOADS, clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET,
+    tokenUrl: GOOGLE_OAUTH_TOKEN_URL, driveApiUrl: GOOGLE_DRIVE_API_URL,
+  })
+    .catch((e) => console.error('Sincronización de Google Drive falló:', e.message))
+    .finally(() => { sincronizandoDrive = false; });
 }
 
 /* ---- Rutas ---- */
@@ -225,6 +255,8 @@ async function rutaSesion(req, res, ruta) {
       google: GOOGLE_ACTIVO,
       googleClientId: GOOGLE_ACTIVO ? GOOGLE_CLIENT_ID : null,
       email: estaLogueado ? emailDeSesion(req) : null,
+      driveActivo: DRIVE_ACTIVO,
+      driveConectado: DRIVE_ACTIVO && Boolean(db.conf('drive_refresh_token')),
     });
     return true;
   }
@@ -277,6 +309,28 @@ async function rutaSesion(req, res, ruta) {
     json(res, 200, { ok: true });
     return true;
   }
+  // Google vuelve acá después de que alguien autoriza el acceso a Drive (ver /api/drive/conectar,
+  // en rutaPrivada). Es una navegación de nivel superior entre sitios: la cookie de sesión no llega
+  // (SameSite=Strict), así que esto se autoriza con el "state" de un solo uso, no con la cookie.
+  if (ruta === '/api/drive/callback' && req.method === 'GET') {
+    const q = new URL(req.url, 'http://local').searchParams;
+    if (q.get('error')) { res.writeHead(302, { location: '/gestion/#/ajustes?drive=cancelado' }); res.end(); return true; }
+    const state = q.get('state') || '';
+    const vencimiento = estadosDrive.get(state);
+    estadosDrive.delete(state);
+    if (!vencimiento || vencimiento < Date.now()) throw new ErrorApi(400, 'El enlace de conexión con Google Drive venció o ya se usó. Probá de nuevo desde Ajustes');
+    const redirectUri = `${req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http'}://${req.headers.host}/api/drive/callback`;
+    const tokens = await intercambiarCodigoPorTokens(String(q.get('code') || ''), {
+      clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET, redirectUri, tokenUrl: GOOGLE_OAUTH_TOKEN_URL,
+    });
+    if (!tokens.refresh_token) {
+      throw new ErrorApi(409, 'Google no devolvió un acceso permanente (puede pasar si ya se había conectado antes). Entrá a myaccount.google.com/permissions, quitale el acceso a este sistema y volvé a intentar');
+    }
+    db.setConf('drive_refresh_token', tokens.refresh_token);
+    res.writeHead(302, { location: '/gestion/#/ajustes' });
+    res.end();
+    return true;
+  }
   return false;
 }
 
@@ -320,6 +374,32 @@ async function rutaPrivada(req, res, ruta, url) {
     const nombre = crypto.randomBytes(12).toString('hex') + ext;
     fs.writeFileSync(path.join(DIR_UPLOADS, nombre), crudo);
     return json(res, 200, { imagen: `uploads/${nombre}` });
+  }
+  if (ruta === '/api/drive/conectar' && req.method === 'GET') {
+    if (!DRIVE_ACTIVO) throw new ErrorApi(404, 'Ruta inexistente');
+    const state = crypto.randomBytes(24).toString('hex');
+    estadosDrive.set(state, Date.now() + 6e5);
+    const redirectUri = `${req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http'}://${req.headers.host}/api/drive/callback`;
+    const parametros = new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID, redirect_uri: redirectUri, response_type: 'code',
+      scope: 'https://www.googleapis.com/auth/drive.readonly', access_type: 'offline', prompt: 'consent', state,
+    });
+    res.writeHead(302, { location: `${GOOGLE_OAUTH_AUTH_URL}?${parametros.toString()}` });
+    res.end();
+    return undefined;
+  }
+  if (ruta === '/api/drive/sincronizar' && req.method === 'POST') {
+    if (!DRIVE_ACTIVO) throw new ErrorApi(404, 'Ruta inexistente');
+    if (sincronizandoDrive) throw new ErrorApi(409, 'Ya hay una sincronización en curso');
+    sincronizandoDrive = true;
+    try {
+      return json(res, 200, await sincronizar(db, {
+        dirUploads: DIR_UPLOADS, clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET,
+        tokenUrl: GOOGLE_OAUTH_TOKEN_URL, driveApiUrl: GOOGLE_DRIVE_API_URL,
+      }));
+    } finally {
+      sincronizandoDrive = false;
+    }
   }
   if (ruta === '/api/backup' && req.method === 'GET') {
     const temporal = path.join(DIR_DATOS, `descarga-${crypto.randomBytes(4).toString('hex')}.db`);
@@ -397,4 +477,6 @@ servidor.listen(PUERTO, HOST, () => {
   else if (!db.conf('clave')) console.log(`  Código de instalación (se pide una sola vez): ${codigoInstalacion()}\n`);
   copiaDiaria();
   setInterval(copiaDiaria, 6 * 36e5).unref();
+  sincronizacionSemanal();
+  setInterval(sincronizacionSemanal, 6 * 36e5).unref();
 });

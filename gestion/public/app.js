@@ -160,7 +160,7 @@ function pantallaClaveGoogle(credential, email, nueva) {
 
 /* ---- Armazón ---- */
 const MENU = [
-  ['inicio', 'Inicio'], ['venta', 'Nueva venta'], ['ventas', 'Ventas'], ['productos', 'Stock'], ['clientes', 'Clientes'],
+  ['inicio', 'Inicio'], ['venta', 'Nueva venta'], ['ventas', 'Ventas'], ['productos', 'Stock'], ['catalogo', 'Catálogo'], ['clientes', 'Clientes'],
   ['proveedores', 'Proveedores'], ['compras', 'Compras'], ['caja', 'Caja'], ['pagos', 'Pagos'], ['arreglos', 'Arreglos'], ['reportes', 'Reportes'], ['ajustes', 'Ajustes'],
 ];
 let op = {};
@@ -409,6 +409,54 @@ VISTAS.productos = async (v, param) => {
     if (!b) return;
     const p = lista.find((x) => x.id === Number(b.dataset.editar || b.dataset.stock));
     if (b.dataset.editar) formProducto(p, proveedores); else await formStock(p);
+  }));
+};
+
+/* ---- Catálogo (vista fotográfica: renombrar rápido y ver qué falta revisar) ---- */
+let filtroCatalogo = { soloRevisar: false };
+function tarjetaCatalogo(p) {
+  return h`<div class="cat-card">
+    <button class="cat-foto" type="button" data-ver="${p.id}" title="Editar precio, costo y más"><img src="${urlImagen(p.imagen)}" alt="">${p.revisar ? h`<span class="tag warn cat-badge">Revisar</span>` : ''}</button>
+    <label class="f">Nombre<input data-campo="nombre" data-id="${p.id}" value="${p.nombre}" placeholder="Sin nombre todavía"></label>
+    <label class="f">Categoría<input data-campo="categoria" data-id="${p.id}" list="cats-catalogo" value="${p.categoria}"></label>
+  </div>`;
+}
+
+VISTAS.catalogo = async (v) => {
+  const [lista, proveedores, s] = await Promise.all([api('GET', 'productos'), api('GET', 'proveedores'), api('GET', 'sesion')]);
+  v.innerHTML = h`
+    <div class="head"><h1>Catálogo</h1><div class="head-actions">
+      ${s.driveConectado ? h`<button class="btn" id="sincronizar" type="button">Sincronizar ahora</button>` : ''}</div></div>
+    <p class="hint">Acá ves todas las fotos del catálogo. Los que dicen “Revisar” llegaron de Google Drive o tienen datos dudosos: tocá la foto para cargarles precio, costo y confirmar el nombre.</p>
+    <label class="check"><input type="checkbox" id="solo-revisar" ${filtroCatalogo.soloRevisar ? 'checked' : ''}> Mostrar sólo los que están a revisar</label>
+    <datalist id="cats-catalogo">${op.categorias_producto.map((c) => h`<option value="${c}"></option>`)}</datalist>
+    <p class="hint" id="cuenta"></p>
+    <div class="grid-catalogo" id="grilla"></div>`;
+  const pintar = () => {
+    const filas = lista.filter((p) => !filtroCatalogo.soloRevisar || p.revisar);
+    $('#grilla').innerHTML = filas.length ? h`${filas.map(tarjetaCatalogo)}` : h`<p class="empty">No hay productos con ese filtro.</p>`;
+    $('#cuenta').textContent = `${filas.length} productos`;
+  };
+  pintar();
+  $('#solo-revisar').addEventListener('change', (e) => { filtroCatalogo.soloRevisar = e.target.checked; pintar(); });
+  $('#grilla').addEventListener('change', intentar(async (e) => {
+    const campo = e.target.dataset.campo;
+    if (!campo) return;
+    const p = lista.find((x) => x.id === Number(e.target.dataset.id));
+    await api('PUT', `productos/${p.id}`, { ...p, [campo]: e.target.value });
+    p[campo] = e.target.value;
+    p.revisar = 0;
+    aviso('Guardado');
+  }));
+  $('#grilla').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ver]');
+    if (!b) return;
+    formProducto(lista.find((x) => x.id === Number(b.dataset.ver)), proveedores);
+  });
+  $('#sincronizar')?.addEventListener('click', intentar(async () => {
+    const r = await api('POST', 'drive/sincronizar', {});
+    aviso(r.ok ? `Listo: ${r.nuevos} producto${r.nuevos === 1 ? '' : 's'} nuevo${r.nuevos === 1 ? '' : 's'}` : (r.motivo || 'No se pudo sincronizar'));
+    refrescar();
   }));
 };
 
@@ -1027,7 +1075,7 @@ VISTAS.reportes = async (v) => {
 
 /* ---- Ajustes ---- */
 VISTAS.ajustes = async (v) => {
-  const a = await api('GET', 'ajustes');
+  const [a, s] = await Promise.all([api('GET', 'ajustes'), api('GET', 'sesion')]);
   v.innerHTML = h`
     <div class="head"><h1>Ajustes</h1></div>
     <div class="cols">
@@ -1038,6 +1086,9 @@ VISTAS.ajustes = async (v) => {
           <label class="f">CUIT<input name="cuit" value="${a.cuit}"></label>
           <label class="f">WhatsApp del catálogo<input name="whatsapp" value="${a.whatsapp}" placeholder="5491123456789"></label>
           <label class="check full"><input type="checkbox" name="mostrar_agotados" ${a.mostrar_agotados ? 'checked' : ''}> Mostrar “Consultar disponibilidad” en productos sin stock</label>
+          ${s.driveActivo && h`
+            <label class="f full">Carpeta de Google Drive a sincronizar<input name="drive_carpeta_id" value="${a.drive_carpeta_id}" placeholder="Pegá el link de la carpeta"></label>
+            <label class="f full">Subcarpetas a excluir (separadas por coma)<input name="drive_excluir" value="${a.drive_excluir}"></label>`}
           <div class="modal-foot full"><button class="btn primary">Guardar</button></div>
         </form></section>
       <section class="card"><h2>Cambiar contraseña</h2>
@@ -1049,6 +1100,11 @@ VISTAS.ajustes = async (v) => {
       <section class="card"><h2>Copia de seguridad</h2>
         <p class="hint">El sistema guarda una copia automática por día. Descargá una cada tanto y guardala en otro lado, por ejemplo en Google Drive.</p>
         <div class="modal-foot"><a class="btn" href="/api/backup">Descargar copia</a></div></section>
+      ${s.driveActivo && h`<section class="card"><h2>Catálogo desde Google Drive</h2>
+        ${s.driveConectado
+    ? h`<p class="hint">Conectado. Última sincronización: ${a.drive_ultima_sincronizacion ? fechaHora(a.drive_ultima_sincronizacion) : 'todavía no corrió'}.${a.drive_ultimo_error ? h` <span class="tag warn">Último error: ${a.drive_ultimo_error}</span>` : ''}</p>`
+    : h`<p class="hint">Conectá una cuenta de Google con acceso a la carpeta del proveedor para traer sus fotos al catálogo (revisa sola los sábados; también se puede forzar desde la pantalla Catálogo).</p>`}
+        <div class="modal-foot"><a class="btn" href="/api/drive/conectar">${s.driveConectado ? 'Reconectar' : 'Conectar Google Drive'}</a></div></section>`}
     </div>`;
   $('#fa').addEventListener('submit', intentar(async (e) => {
     e.preventDefault();

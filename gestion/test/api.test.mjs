@@ -71,7 +71,9 @@ test('la instalación exige el código y una clave larga', async () => {
   assert.equal((await pedir('POST', '/api/instalar', { codigo: CODIGO, clave: 'corta' })).status, 400);
   await ok('POST', '/api/instalar', { codigo: CODIGO, clave: CLAVE });
   assert.equal((await pedir('POST', '/api/instalar', { codigo: CODIGO, clave: CLAVE })).status, 409);
-  assert.deepEqual((await ok('GET', '/api/sesion')), { configurado: true, logueado: true, sucursal: 'Moreno', google: false, googleClientId: null, email: '' });
+  assert.deepEqual((await ok('GET', '/api/sesion')), {
+    configurado: true, logueado: true, sucursal: 'Moreno', google: false, googleClientId: null, email: '', driveActivo: false, driveConectado: false,
+  });
 });
 
 test('con IZEL_CLAVE_INICIAL el sistema arranca con esa clave ya puesta, sin pedir código', async () => {
@@ -88,7 +90,9 @@ test('con IZEL_CLAVE_INICIAL el sistema arranca con esa clave ya puesta, sin ped
       try { await fetch(`${urlBase}/api/sesion`); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
     }
     const sesion = await (await fetch(`${urlBase}/api/sesion`)).json();
-    assert.deepEqual(sesion, { configurado: true, logueado: false, sucursal: null, google: false, googleClientId: null, email: null });
+    assert.deepEqual(sesion, {
+      configurado: true, logueado: false, sucursal: null, google: false, googleClientId: null, email: null, driveActivo: false, driveConectado: false,
+    });
     const rInstalar = await fetch(`${urlBase}/api/instalar`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -356,7 +360,9 @@ test('la copia de seguridad descarga una base válida', async () => {
 });
 
 test('Moreno y Morón no se pisan: clientes, stock y caja quedan separados por sucursal', async () => {
-  assert.deepEqual(await ok('GET', '/api/sesion'), { configurado: true, logueado: true, sucursal: 'Moreno', google: false, googleClientId: null, email: '' });
+  assert.deepEqual(await ok('GET', '/api/sesion'), {
+    configurado: true, logueado: true, sucursal: 'Moreno', google: false, googleClientId: null, email: '', driveActivo: false, driveConectado: false,
+  });
 
   const clienteMoreno = (await ok('POST', '/api/clientes', { nombre: 'Cliente Moreno' })).id;
   await ok('POST', `/api/productos/${prod.id}/ajuste`, { cantidad: 5, motivo: 'Carga Moreno' });
@@ -546,7 +552,7 @@ test('con Google activado: sólo entran los mails autorizados, cada uno con su p
     // La lista de autorizados se compara sin importar mayúsculas: "Duena1@gmail.com" en la variable de entorno
     // igual reconoce el mail que Google devuelve en minúsculas.
     assert.deepEqual((await pedirG('GET', '/api/sesion')).data, {
-      configurado: true, logueado: false, sucursal: null, google: true, googleClientId: AUD, email: null,
+      configurado: true, logueado: false, sucursal: null, google: true, googleClientId: AUD, email: null, driveActivo: false, driveConectado: false,
     });
 
     assert.equal((await pedirG('POST', '/api/instalar', { codigo: 'x', clave: 'cualquiera1' })).status, 404, 'la clave única vieja queda deshabilitada');
@@ -566,7 +572,7 @@ test('con Google activado: sólo entran los mails autorizados, cada uno con su p
     assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena1', clave: 'corta' })).status, 400);
     assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena1', clave: 'clave-de-duena-1' })).status, 200);
     assert.deepEqual((await pedirG('GET', '/api/sesion')).data, {
-      configurado: true, logueado: true, sucursal: 'Moreno', google: true, googleClientId: AUD, email: 'duena1@gmail.com',
+      configurado: true, logueado: true, sucursal: 'Moreno', google: true, googleClientId: AUD, email: 'duena1@gmail.com', driveActivo: false, driveConectado: false,
     });
 
     await pedirG('POST', '/api/logout', {});
@@ -584,6 +590,196 @@ test('con Google activado: sólo entran los mails autorizados, cada uno con su p
     assert.deepEqual(otraPrimera.data, { email: 'duena2@gmail.com', nueva: true });
     assert.equal((await pedirG('POST', '/api/login-google', { credential: 'tok-duena2', clave: 'clave-de-duena-2' })).status, 200);
     assert.equal((await pedirG('GET', '/api/sesion')).data.email, 'duena2@gmail.com', 'cada una entra con la suya, sin mezclarse');
+  } finally {
+    proc.kill();
+    stub.close();
+    await new Promise((r) => setTimeout(r, 300));
+    fs.rmSync(datos, { recursive: true, force: true });
+  }
+});
+
+test('catálogo desde Google Drive: conecta, sincroniza, excluye Fornituras y no borra lo que ya no aparece', async () => {
+  const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 1, 2, 3, 4, 5]);
+  const NO_IMAGEN = Buffer.from('esto no es una imagen de verdad');
+  // Imita la estructura real relevada a mano en la carpeta del proveedor: una raíz con una
+  // subcarpeta "Fornituras" (se tiene que excluir entera) y una subcarpeta con fotos de verdad,
+  // más un archivo con mimeType de imagen pero que no es un jpg/png/webp real (ej. un HEIC).
+  const archivos = {
+    raiz: { id: 'raiz', name: 'Catálogo proveedor', mimeType: 'application/vnd.google-apps.folder', parents: [] },
+    fornituras: { id: 'fornituras', name: 'Fornituras', mimeType: 'application/vnd.google-apps.folder', parents: ['raiz'] },
+    vacia: { id: 'vacia', name: 'Novedades', mimeType: 'application/vnd.google-apps.folder', parents: ['raiz'] },
+    dijes: { id: 'dijes', name: 'Dijes ac', mimeType: 'application/vnd.google-apps.folder', parents: ['raiz'] },
+    broche: { id: 'broche', name: 'broche.jpg', mimeType: 'image/jpeg', parents: ['fornituras'], contenido: JPG },
+    foto1: { id: 'foto1', name: 'D3767.jpg', mimeType: 'image/jpeg', parents: ['dijes'], contenido: JPG },
+    foto2: { id: 'foto2', name: 'D3814.jpg', mimeType: 'image/jpeg', parents: ['dijes'], contenido: JPG },
+    heic: { id: 'heic', name: 'foto-iphone.heic', mimeType: 'image/heic', parents: ['dijes'], contenido: NO_IMAGEN },
+  };
+  let descargasDeFornituras = 0;
+  const pedidosDrive = [];
+  const stub = http.createServer((req, res) => {
+    let cuerpo = '';
+    req.on('data', (c) => { cuerpo += c; });
+    req.on('end', () => {
+      const u = new URL(req.url, 'http://local');
+      pedidosDrive.push(u.pathname);
+      if (u.pathname === '/token') {
+        const b = new URLSearchParams(cuerpo);
+        if (b.get('client_id') !== 'client-drive' || b.get('client_secret') !== 'secreto-drive') {
+          res.writeHead(401, { 'content-type': 'application/json' }); res.end('{}'); return;
+        }
+        if (b.get('grant_type') === 'authorization_code') {
+          if (b.get('code') === 'codigo-sin-refresh') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ access_token: 'acc-1', expires_in: 3600 }));
+            return;
+          }
+          if (b.get('code') !== 'codigo-bueno') { res.writeHead(400, { 'content-type': 'application/json' }); res.end('{}'); return; }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ access_token: 'acc-1', refresh_token: 'refresh-1', expires_in: 3600 }));
+          return;
+        }
+        if (b.get('grant_type') === 'refresh_token' && b.get('refresh_token') === 'refresh-1') {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ access_token: 'acc-1', expires_in: 3600 }));
+          return;
+        }
+        res.writeHead(401, { 'content-type': 'application/json' }); res.end('{}');
+        return;
+      }
+      if (u.pathname === '/drive/files') {
+        const padre = /^'([^']+)' in parents/.exec(u.searchParams.get('q') || '')?.[1];
+        const files = Object.values(archivos).filter((a) => a.parents.includes(padre)).map(({ id, name, mimeType }) => ({ id, name, mimeType }));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ files }));
+        return;
+      }
+      const m = /^\/drive\/files\/([^/]+)$/.exec(u.pathname);
+      if (m && u.searchParams.get('alt') === 'media') {
+        const a = archivos[m[1]];
+        if (a?.parents.includes('fornituras')) descargasDeFornituras += 1;
+        if (!a) { res.writeHead(404); res.end(); return; }
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        res.end(a.contenido);
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+  });
+  await new Promise((r) => stub.listen(0, '127.0.0.1', r));
+  const puertoStub = stub.address().port;
+  const urlStub = `http://127.0.0.1:${puertoStub}`;
+
+  const puerto = 3114;
+  const urlBase = `http://127.0.0.1:${puerto}`;
+  const datos = fs.mkdtempSync(path.join(os.tmpdir(), 'izel-test-drive-'));
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BASE,
+    env: {
+      ...process.env, PORT: String(puerto), IZEL_DATOS: datos, IZEL_CODIGO_INSTALACION: CODIGO,
+      GOOGLE_CLIENT_ID: 'client-drive', GOOGLE_CLIENT_SECRET: 'secreto-drive',
+      GOOGLE_OAUTH_TOKEN_URL: `${urlStub}/token`, GOOGLE_DRIVE_API_URL: `${urlStub}/drive`,
+    },
+    stdio: 'ignore',
+  });
+  let cookie = '';
+  const pedirD = async (metodo, ruta, cuerpo, { redirigir = 'manual' } = {}) => {
+    const r = await fetch(`${urlBase}${ruta}`, {
+      method: metodo,
+      redirect: redirigir,
+      headers: { ...(cuerpo !== undefined ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}) },
+      body: cuerpo !== undefined ? JSON.stringify(cuerpo) : undefined,
+    });
+    const set = r.headers.get('set-cookie');
+    if (set) cookie = set.split(';')[0];
+    const texto = await r.text();
+    let data; try { data = JSON.parse(texto); } catch { data = texto; }
+    return { status: r.status, headers: r.headers, data };
+  };
+
+  try {
+    for (let i = 0; i < 50; i += 1) {
+      try { await fetch(`${urlBase}/api/sesion`); break; } catch { await new Promise((res) => setTimeout(res, 100)); }
+    }
+    await pedirD('POST', '/api/instalar', { codigo: CODIGO, clave: CLAVE });
+    assert.deepEqual((await pedirD('GET', '/api/sesion')).data, {
+      configurado: true, logueado: true, sucursal: 'Moreno', google: false, googleClientId: null, email: '', driveActivo: true, driveConectado: false,
+    });
+
+    // /conectar exige sesión (ya la tenemos) y arma un "state" de un solo uso; /callback, en cambio,
+    // tiene que funcionar SIN la cookie: así llega de verdad desde accounts.google.com (navegación
+    // entre sitios, y la cookie de sesión es SameSite=Strict).
+    const conectar = await pedirD('GET', '/api/drive/conectar');
+    assert.equal(conectar.status, 302);
+    const destino = new URL(conectar.headers.get('location'));
+    assert.equal(destino.origin + destino.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
+    assert.equal(destino.searchParams.get('scope'), 'https://www.googleapis.com/auth/drive.readonly');
+    assert.equal(destino.searchParams.get('access_type'), 'offline');
+    assert.equal(destino.searchParams.get('prompt'), 'consent');
+    const state = destino.searchParams.get('state');
+
+    const sinState = await fetch(`${urlBase}/api/drive/callback?code=codigo-bueno&state=lo-que-sea`);
+    assert.equal(sinState.status, 400, 'un state inválido o repetido se rechaza');
+
+    // Si Google no devuelve refresh_token (puede pasar si ya se había otorgado el acceso antes),
+    // se avisa en vez de quedar "conectado a medias".
+    const conectar2 = await pedirD('GET', '/api/drive/conectar');
+    const state2 = new URL(conectar2.headers.get('location')).searchParams.get('state');
+    const sinRefresh = await fetch(`${urlBase}/api/drive/callback?code=codigo-sin-refresh&state=${state2}`, { redirect: 'manual' });
+    assert.equal(sinRefresh.status, 409);
+
+    const callback = await fetch(`${urlBase}/api/drive/callback?code=codigo-bueno&state=${state}`, { redirect: 'manual' });
+    assert.equal(callback.status, 302, 'la vuelta de Google funciona sin la cookie de sesión');
+    assert.equal((await pedirD('GET', '/api/sesion')).data.driveConectado, true);
+
+    await pedirD('PUT', '/api/ajustes', { negocio: 'Izel Joyas', drive_carpeta_id: 'https://drive.google.com/drive/folders/raiz' });
+    assert.equal((await pedirD('GET', '/api/ajustes')).data.drive_carpeta_id, 'raiz', 'acepta pegar la URL completa y guarda sólo el ID');
+    assert.equal((await pedirD('GET', '/api/ajustes')).data.drive_excluir, 'Fornituras', 'la exclusión viene sembrada con Fornituras por defecto');
+
+    const r1 = await pedirD('POST', '/api/drive/sincronizar', {});
+    assert.equal(r1.status, 200);
+    assert.equal(r1.data.nuevos, 2, 'sólo las 2 fotos de Dijes ac; Fornituras queda afuera y el .heic se omite');
+    assert.deepEqual(r1.data.omitidos, ['foto-iphone.heic']);
+    assert.equal(descargasDeFornituras, 0, 'nunca se descarga nada de la carpeta excluida');
+
+    const productos = (await pedirD('GET', '/api/productos')).data;
+    const sincronizados = productos.filter((p) => p.drive_file_id);
+    assert.equal(sincronizados.length, 2);
+    for (const p of sincronizados) {
+      assert.equal(p.nombre, '');
+      assert.equal(p.categoria, 'Dijes ac');
+      assert.equal(p.costo, 0);
+      assert.equal(p.precio, 0, 'el precio mayorista de la foto nunca se guarda');
+      assert.equal(p.publicado, 0, 'no se auto-publica: la dueña revisa y carga precio/stock real antes');
+      assert.equal(p.revisar, 1);
+      assert.ok(p.imagen.startsWith('uploads/'));
+      const foto = await fetch(`${urlBase}/${p.imagen}`);
+      assert.equal(foto.status, 200);
+    }
+    assert.ok(!productos.some((p) => p.categoria === 'Fornituras'), 'nada de Fornituras se convirtió en producto');
+
+    // Correr de nuevo sin cambios en Drive no duplica nada.
+    const r2 = await pedirD('POST', '/api/drive/sincronizar', {});
+    assert.equal(r2.data.nuevos, 0);
+    assert.equal((await pedirD('GET', '/api/productos')).data.filter((p) => p.drive_file_id).length, 2);
+
+    // La dueña edita uno a mano (le pone nombre): PUT ya apaga "revisar" solo.
+    const editado = sincronizados[0];
+    await pedirD('PUT', `/api/productos/${editado.id}`, {
+      ...editado, nombre: 'Dije corazón con ciervo', codigo: editado.codigo,
+    });
+    assert.equal((await pedirD('GET', `/api/productos`)).data.find((p) => p.id === editado.id).revisar, 0);
+
+    // El proveedor saca esa foto de Drive: nunca se borra ni se despublica sola, sólo vuelve a revisar.
+    delete archivos[editado.drive_file_id];
+    const r3 = await pedirD('POST', '/api/drive/sincronizar', {});
+    assert.equal(r3.data.nuevos, 0);
+    assert.equal(r3.data.marcados_a_revisar, 1);
+    const sigueExistiendo = (await pedirD('GET', '/api/productos')).data.find((p) => p.id === editado.id);
+    assert.ok(sigueExistiendo, 'no se borró');
+    assert.equal(sigueExistiendo.activo, 1);
+    assert.equal(sigueExistiendo.nombre, 'Dije corazón con ciervo', 'tampoco se pisó lo que ya había cargado la dueña');
+    assert.equal(sigueExistiendo.revisar, 1);
   } finally {
     proc.kill();
     stub.close();

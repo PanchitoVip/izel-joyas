@@ -89,6 +89,24 @@ node -e "const {DatabaseSync:D}=require('node:sqlite');new D('gestion/data/izel.
 ```
 Al volver a entrar con Google, el sistema le pide elegir una contraseña nueva.
 
+### Catálogo desde Google Drive (opcional)
+
+Si además se agrega `GOOGLE_CLIENT_SECRET`, aparece en Ajustes un botón "Conectar Google Drive": trae las fotos de una carpeta de Drive al catálogo (categoría sugerida = nombre de la subcarpeta, nunca precio ni material) y las revisa solas una vez por semana (sábados), además de poder forzarlo a mano desde la pantalla "Catálogo". Es independiente del login de arriba, pero usa el mismo Client ID.
+
+```
+GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Pensado para carpetas de un proveedor (de sólo lectura para quien conecta la cuenta): por eso no usa una cuenta de servicio de Google (necesitaría que el dueño de la carpeta le diera acceso a esa cuenta, algo que no siempre se puede pedir), sino el acceso de Google de la persona que hace clic en "Conectar", igual que haría ella mirando la carpeta a mano.
+
+**Antes de poder conectar, una sola vez en [console.cloud.google.com](https://console.cloud.google.com)** (mismo proyecto que el login con Google):
+1. "APIs y servicios" > "Biblioteca": buscar y habilitar **Google Drive API**.
+2. "Google Auth Platform" > "Acceso a los datos" > agregar el permiso `.../auth/drive.readonly`.
+3. "Google Auth Platform" > "Clientes" > el mismo Client ID del login > "URIs de redireccionamiento autorizados": agregar `https://el-dominio-del-sistema/api/drive/callback` (y `http://localhost:3000/api/drive/callback` para probarlo en la compu).
+4. Copiar el "Secreto del cliente" (sólo se puede ver una vez) y usarlo como `GOOGLE_CLIENT_SECRET`.
+
+La carpeta a sincronizar y qué subcarpetas excluir (viene con "Fornituras" sembrada) se cargan desde Ajustes, no por variable de entorno — son una decisión de la dueña, no de infraestructura. Los productos que llegan de Drive entran sin publicar y marcados "a revisar": hay que cargarles precio, costo y confirmar el nombre antes de que aparezcan en el catálogo público.
+
 **Opción rápida: sólo el catálogo, gratis.** La carpeta `catalogo/` es un sitio estático: se puede subir a Netlify, Cloudflare Pages o GitHub Pages con el número cargado en `config.js`. Los productos salen de `data/productos.json`. Para conectarlo después a un sistema en otro dominio, poner su dirección en `api` de `config.js` y `CATALOGO_ORIGEN=https://dominio-del-catalogo` en el servidor.
 
 **Opción local: la gestión sólo en la compu del local.** Funciona con los `.bat`, pero el catálogo público no se actualizaría solo, y si la compu se rompe sólo quedan las copias que se hayan guardado afuera.

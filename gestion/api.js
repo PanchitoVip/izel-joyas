@@ -15,6 +15,12 @@ export const CATEGORIAS_MANUALES = {
 const FUERA_DE_RESULTADO = ['Venta', 'Cobranza', 'Saldo inicial', 'Aporte', 'Pago a proveedor', 'Retiro personal', 'Anulación de venta', 'Ajuste de arqueo'];
 const NO_RESULTADO_SQL = FUERA_DE_RESULTADO.map((c) => `'${c}'`).join(',');
 
+// Se usa tanto para el alta manual de productos como para los que llegan de la sincronización con Google Drive.
+export function siguienteCodigo(db) {
+  const max = db.get(`SELECT MAX(CAST(SUBSTR(codigo, 4) AS INTEGER)) m FROM productos WHERE codigo GLOB 'IZ-[0-9]*'`).m || 0;
+  return `IZ-${String(max + 1).padStart(3, '0')}`;
+}
+
 const texto = (v, max = 300) => String(v ?? '').trim().slice(0, max);
 function entero(v, nombre, min = 0, max = 1e12) {
   const n = Number(v);
@@ -91,10 +97,6 @@ export function crearApi(db) {
       publicado: b.publicado ? 1 : 0,
       destacado: b.destacado ? 1 : 0,
     };
-  }
-  function siguienteCodigo() {
-    const max = db.get(`SELECT MAX(CAST(SUBSTR(codigo, 4) AS INTEGER)) m FROM productos WHERE codigo GLOB 'IZ-[0-9]*'`).m || 0;
-    return `IZ-${String(max + 1).padStart(3, '0')}`;
   }
   function codigoLibre(codigo, id = 0) {
     if (db.get('SELECT id FROM productos WHERE codigo = ? AND id != ?', codigo, id)) falla(`El código ${codigo} ya está en uso`);
@@ -344,7 +346,7 @@ export function crearApi(db) {
     categorias_caja: CATEGORIAS_MANUALES,
     categorias_producto: db.all(`SELECT DISTINCT categoria FROM productos WHERE activo = 1 ORDER BY categoria`).map((r) => r.categoria),
     materiales: db.all(`SELECT DISTINCT material FROM productos WHERE activo = 1 AND material != '' ORDER BY material`).map((r) => r.material),
-    siguiente_codigo: siguienteCodigo(),
+    siguiente_codigo: siguienteCodigo(db),
     sucursales: SUCURSALES,
   }));
   ruta('GET', '/api/resumen', ({ sucursal }) => resumen(sucursal));
@@ -358,7 +360,7 @@ export function crearApi(db) {
   ));
   ruta('POST', '/api/productos', ({ b, sucursal }) => {
     const d = datosProducto(b);
-    const codigo = codigoLibre(texto(b.codigo, 30) || siguienteCodigo());
+    const codigo = codigoLibre(texto(b.codigo, 30) || siguienteCodigo(db));
     const stock = entero(b.stock ?? 0, 'El stock inicial');
     const stockMinimo = entero(b.stock_minimo ?? 0, 'El stock mínimo');
     return db.tx(() => {
@@ -631,6 +633,10 @@ export function crearApi(db) {
     cuit: db.conf('cuit'),
     whatsapp: db.conf('whatsapp'),
     mostrar_agotados: db.conf('mostrar_agotados', '0') === '1',
+    drive_carpeta_id: db.conf('drive_carpeta_id', ''),
+    drive_excluir: db.conf('drive_excluir', 'Fornituras'),
+    drive_ultima_sincronizacion: db.conf('drive_ultima_sincronizacion', ''),
+    drive_ultimo_error: db.conf('drive_ultimo_error', ''),
   }));
   ruta('PUT', '/api/ajustes', ({ b }) => {
     const whatsapp = texto(b.whatsapp, 20).replace(/\D/g, '');
@@ -639,6 +645,12 @@ export function crearApi(db) {
     db.setConf('cuit', texto(b.cuit, 20));
     db.setConf('whatsapp', whatsapp);
     db.setConf('mostrar_agotados', b.mostrar_agotados ? '1' : '0');
+    if (b.drive_carpeta_id !== undefined) {
+      // Acepta pegar la URL completa de Drive (https://drive.google.com/drive/folders/<id>) o el ID solo.
+      const m = /\/folders\/([^/?]+)/.exec(texto(b.drive_carpeta_id, 300));
+      db.setConf('drive_carpeta_id', m ? m[1] : texto(b.drive_carpeta_id, 150));
+    }
+    if (b.drive_excluir !== undefined) db.setConf('drive_excluir', texto(b.drive_excluir, 300));
     return { ok: true };
   });
 

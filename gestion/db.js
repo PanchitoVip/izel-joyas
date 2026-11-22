@@ -107,6 +107,10 @@ function migrarASucursales(raw) {
   // Para bases de antes de guardar, en cada cierre, hasta qué movimiento de caja quedó contado
   // (se usa para no dejar borrar un movimiento que ya quedó dentro de un cierre hecho).
   agregarColumna('cierres_caja', 'hasta_movimiento_id', 'INTEGER NOT NULL DEFAULT 0');
+  // Para bases de antes de la sincronización con Google Drive: marca qué productos vienen de ahí,
+  // para no duplicarlos ni pisar los que ya se cargaron a mano.
+  agregarColumna('productos', 'drive_file_id', 'TEXT');
+  raw.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_drive_file_id ON productos (drive_file_id) WHERE drive_file_id IS NOT NULL');
   if (columnasDe('productos').includes('stock')) {
     raw.exec(`INSERT INTO stock_sucursal (producto_id, sucursal, cantidad, stock_minimo)
       SELECT id, '${SUCURSAL_POR_DEFECTO}', stock, stock_minimo FROM productos`);
