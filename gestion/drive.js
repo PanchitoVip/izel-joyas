@@ -127,7 +127,8 @@ function descargarImagenDrive(accessToken, fileId, { driveApiUrl }, maxBytes = 8
 export async function sincronizar(db, opts) {
   const refreshToken = db.conf('drive_refresh_token', '');
   const folderId = db.conf('drive_carpeta_id', '');
-  if (!refreshToken || !folderId) return { ok: false, motivo: 'Todavía no se conectó Google Drive' };
+  if (!refreshToken) return { ok: false, motivo: 'Todavía no se conectó Google Drive' };
+  if (!folderId) return { ok: false, motivo: 'Falta cargar la carpeta de Google Drive en Ajustes' };
   const exclusiones = new Set(
     db.conf('drive_excluir', EXCLUSION_DEFECTO).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
   );
