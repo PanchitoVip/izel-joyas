@@ -66,14 +66,15 @@ Ideas sumadas: arreglos con seña, aumento masivo de precios, cierre de caja, re
 
 **Sin verificar:** el PDF del comprobante se genera en una página, pero nadie lo miró como imagen; el botón de WhatsApp con un número real.
 
-**Datos actuales:** `gestion/data` viene con lo que se cargó en la PC original: contraseña definida (Francisco la cambió a pedido del usuario; no está en ningún archivo), 1 venta, 1 cliente ("lili"), 1 proveedor y 4 movimientos de caja, todo migrado a la sucursal Moreno. No se sabe si es de prueba. **Preguntá antes de borrar o reiniciar esos datos.** Para reiniciar la contraseña, ver el README.
+**Datos actuales:** `gestion/data` viene con lo que se cargó en la PC original: contraseña definida (Francisco la cambió a pedido del usuario; no está en ningún archivo), 1 venta, 1 cliente ("lili"), 1 proveedor y 4 movimientos de caja, todo migrado a la sucursal Moreno. **Confirmado por el usuario: son datos de prueba, no hay nada real que migrar a producción.** Las fotos de los 30 productos actuales (de Instagram) tampoco se van a usar: van a salir de una carpeta de Google Drive (ver Pendientes). Para reiniciar la contraseña, ver el README.
 
 ## Pendientes
 
 1. Número de WhatsApp: falta. Va en Gestión > Ajustes y, si el catálogo se publica solo, en `catalogo/config.js`.
-2. Que ella confirme los productos marcados "Revisar" y cargue precios, costos y stock.
+2. Que ella confirme los productos marcados "Revisar" y cargue precios, costos y stock — **en pausa**: con la carpeta de Drive (Pendientes 5) los productos actuales de Instagram se van a reemplazar, no tiene sentido cargarles datos reales todavía.
 3. Que confirme si prefiere los **proveedores separados por local** en vez de compartidos (ver Decisiones > Sucursales) — es el único supuesto sin confirmar de ese cambio.
-4. Cuando quiera pasar a producción: hosting pago con disco persistente (Render/Railway/VPS, no el free actual) y, más adelante, login por mail/usuario para que cada local tenga su propia cuenta — hoy la sucursal se elige con un selector, no con el login.
+4. Login por mail/usuario para que cada local tenga su propia cuenta — hoy la sucursal se sigue eligiendo con un selector, no con el login (el login con Google identifica a la persona, no todavía el local).
+5. Conectar una carpeta de Google Drive como origen de los productos del catálogo (fotos y, para las que no tengan, poder ponerles nombre desde un apartado nuevo "Catálogo" en la gestión), con una revisión automática semanal (sábados) de lo que se agregó o sacó. Pedido explícitamente por el usuario, todavía no empezado — va a necesitar una Service Account de Google aparte del Client ID de login. Mientras no esté, los 30 productos actuales (de Instagram) son descartables: no hace falta confirmarlos ni cargarles precio/costo/stock (ver Pendientes 2).
 
 ## Sobre la publicación
 
@@ -82,7 +83,8 @@ Ideas sumadas: arreglos con seña, aumento masivo de precios, cierre de caja, re
 - Repo en GitHub: `github.com/PanchitoVip/izel-joyas` (público). Push a `main` redespliega los dos solos.
 - Catálogo en Netlify: **izel-joyas.netlify.app**. Carpeta publicada: `catalogo/`.
 - Gestión de **demo** en Render (plan free): **izel-joyas.onrender.com/gestion/**, con una contraseña fija puesta vía `IZEL_CLAVE_INICIAL` (variable de entorno en el panel de Render; no está en ningún archivo del repo). Es una base aparte, no la real: se duerme sola a los ~15 min de inactividad (tarda hasta 50s en responder después) y **se resetea en cada redeploy** — es solo para mostrar, no para cargar datos que importen. Otras variables puestas en Render: `HOST=0.0.0.0`, `TRUST_PROXY=1`.
-- La PC local (con los datos reales) sigue aparte e intacta; nada de esto la toca.
+- Gestión de **producción** en Render, servicio **`izel-joyas-produccion`** (plan Starter pago + disco persistente de 1 GB en `/var/data`): **izel-joyas-produccion.onrender.com/gestion/**. El usuario creó el servicio y cargó las variables él mismo, en su propio navegador (prefiere manejar personalmente cualquier paso con tarjeta). Tiene el login con Google activo (`GOOGLE_CLIENT_ID` + `IZEL_CORREOS_AUTORIZADOS` con los mails de las dos dueñas y el de Francisco, este último sumado para poder probar — ver Decisiones > Login con Google). Probado de punta a punta con una cuenta de Google real. **Confirmado por el usuario: la base de esta demo y de esta producción son datos de prueba, no hay datos reales que migrar desde la PC.**
+- La PC local sigue aparte e intacta; nada de esto la toca.
 
 Cuando pase a producción en serio:
 
