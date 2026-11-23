@@ -12,7 +12,7 @@ export const CATEGORIAS_MANUALES = {
   egreso: ['Alquiler', 'Servicios', 'Impuestos', 'Sueldos', 'Publicidad', 'Insumos y packaging', 'Envíos', 'Comisiones', 'Otros gastos', 'Retiro personal'],
 };
 // Movimientos de plata que no son ni ganancia ni gasto: la mercadería entra al resultado por su costo al venderse.
-const FUERA_DE_RESULTADO = ['Venta', 'Cobranza', 'Saldo inicial', 'Aporte', 'Pago a proveedor', 'Retiro personal', 'Anulación de venta', 'Anulación de compra', 'Anulación de pago', 'Ajuste de arqueo'];
+const FUERA_DE_RESULTADO = ['Venta', 'Cobranza', 'Saldo inicial', 'Aporte', 'Pago a proveedor', 'Retiro personal', 'Anulación de venta', 'Anulación de compra', 'Anulación de pago', 'Ajuste de arqueo', 'Anulación de cierre'];
 const NO_RESULTADO_SQL = FUERA_DE_RESULTADO.map((c) => `'${c}'`).join(',');
 
 // Se usa tanto para el alta manual de productos como para los que llegan de la sincronización con Google Drive.
@@ -684,14 +684,32 @@ export function crearApi(db) {
       const esperado = efectivoEnCaja(sucursal);
       const diferencia = contado - esperado;
       const hastaMovimientoId = db.get('SELECT COALESCE(MAX(id), 0) m FROM caja WHERE sucursal = ?', sucursal).m;
-      db.run(
+      const { lastInsertRowid } = db.run(
         'INSERT INTO cierres_caja (fecha, sucursal, esperado, contado, diferencia, notas, hasta_movimiento_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
         ahora(), sucursal, esperado, contado, diferencia, texto(b.notas, 200), hastaMovimientoId,
       );
       if (diferencia) {
-        movimientoCaja(sucursal, diferencia > 0 ? 'ingreso' : 'egreso', 'Ajuste de arqueo', 'Diferencia del cierre de caja', 'Efectivo', Math.abs(diferencia), 'cierre');
+        movimientoCaja(sucursal, diferencia > 0 ? 'ingreso' : 'egreso', 'Ajuste de arqueo', 'Diferencia del cierre de caja', 'Efectivo', Math.abs(diferencia), 'cierre', Number(lastInsertRowid));
       }
-      return { esperado, contado, diferencia };
+      return { id: Number(lastInsertRowid), esperado, contado, diferencia };
+    });
+  });
+  ruta('POST', '/api/caja/cierres/:id/anular', ({ id, sucursal }) => {
+    const c = db.get('SELECT * FROM cierres_caja WHERE id = ? AND sucursal = ?', id, sucursal) || falla('Cierre inexistente', 404);
+    if (c.estado === 'anulada') falla('Este cierre ya estaba anulado');
+    // Sólo se puede anular el ÚLTIMO cierre: uno posterior ya volvió a contar el efectivo partiendo
+    // de acá, así que deshacer uno de en medio dejaría esos cierres posteriores sin poder explicarse.
+    const posterior = db.get(`SELECT id FROM cierres_caja WHERE sucursal = ? AND id > ? AND estado = 'ok'`, sucursal, id);
+    if (posterior) falla('No se puede anular: ya se hizo un cierre de caja después de este');
+    return db.tx(() => {
+      db.run(`UPDATE cierres_caja SET estado = 'anulada' WHERE id = ?`, id);
+      if (c.diferencia) {
+        movimientoCaja(
+          sucursal, c.diferencia > 0 ? 'egreso' : 'ingreso', 'Anulación de cierre',
+          'Anulación de la diferencia del cierre de caja', 'Efectivo', Math.abs(c.diferencia), 'anulacion_cierre', id,
+        );
+      }
+      return { ok: true };
     });
   });
 

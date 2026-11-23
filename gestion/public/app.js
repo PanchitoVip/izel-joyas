@@ -988,7 +988,11 @@ VISTAS.caja = async (v) => {
     <tbody id="filas">${c.movimientos.length ? c.movimientos.map((m) => h`<tr><td>${fechaHora(m.fecha)}</td><td>${m.categoria}</td><td>${m.concepto}</td><td>${m.medio}</td>
       <td class="n ${m.tipo === 'egreso' ? 'neg' : 'pos'}">${m.tipo === 'egreso' ? '−' : '+'}${plata(m.monto)}</td>
       <td class="actions">${!m.ref_tipo && h`<button class="btn small" data-borrar="${m.id}" type="button">Borrar</button>`}</td></tr>`) : h`<tr><td colspan="6" class="empty">No hay movimientos en este período.</td></tr>`}</tbody></table></div>
-    ${c.cierres.length > 0 && h`<section class="card cols-gap"><h2>Últimos cierres</h2><table><thead><tr><th>Fecha</th><th class="n">Esperado</th><th class="n">Contado</th><th class="n">Diferencia</th></tr></thead><tbody>${c.cierres.map((x) => h`<tr><td>${fechaHora(x.fecha)}</td><td class="n">${plata(x.esperado)}</td><td class="n">${plata(x.contado)}</td><td class="n ${x.diferencia < 0 ? 'neg' : ''}">${plata(x.diferencia)}</td></tr>`)}</tbody></table></section>`}`;
+    ${c.cierres.length > 0 && h`<section class="card cols-gap"><h2>Últimos cierres</h2><table><thead><tr><th>Fecha</th><th class="n">Esperado</th><th class="n">Contado</th><th class="n">Diferencia</th><th></th><th></th></tr></thead><tbody>${c.cierres.map((x, i) => h`<tr>
+      <td>${fechaHora(x.fecha)}</td><td class="n">${plata(x.esperado)}</td><td class="n">${plata(x.contado)}</td><td class="n ${x.diferencia < 0 ? 'neg' : ''}">${plata(x.diferencia)}</td>
+      <td>${x.estado === 'anulada' ? h`<span class="tag mute">Anulado</span>` : ''}</td>
+      <td class="actions">${i === 0 && x.estado !== 'anulada' ? h`<button class="btn small" data-anular-cierre="${x.id}" type="button">Anular</button>` : ''}</td>
+    </tr>`)}</tbody></table></section>`}`;
   usarFechas(refrescar);
   $('#ing').addEventListener('click', () => formMovimiento('ingreso'));
   $('#egr').addEventListener('click', () => formMovimiento('egreso'));
@@ -997,6 +1001,14 @@ VISTAS.caja = async (v) => {
     const b = e.target.closest('[data-borrar]');
     if (!b || !await confirmar('Borrar movimiento', 'Se elimina este movimiento de la caja.', 'Borrar')) return;
     await api('DELETE', `caja/${b.dataset.borrar}`);
+    refrescar();
+  }));
+  v.addEventListener('click', intentar(async (e) => {
+    const b = e.target.closest('[data-anular-cierre]');
+    if (!b) return;
+    if (!await confirmar('Anular cierre', 'Deshace el ajuste de diferencia que haya dejado este cierre. ¿Confirmás?', 'Anular')) return;
+    await api('POST', `caja/cierres/${b.dataset.anularCierre}/anular`, {});
+    aviso('Cierre anulado');
     refrescar();
   }));
 };

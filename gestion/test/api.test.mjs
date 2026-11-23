@@ -886,6 +886,22 @@ test('anular compra, factura duplicada y límite de crédito (servidor propio, n
     assert.equal((await okA('GET', `/api/clientes/${clienteNota}/cuenta`)).saldo, 70000, 'la nota de crédito bajó la deuda sin tocar caja');
     const cajaFinal = await okA('GET', '/api/caja');
     assert.ok(!cajaFinal.movimientos.some((c) => c.concepto === 'Descuento por cadena rota'), 'un ajuste manual de cuenta corriente nunca mueve caja');
+
+    // Cierre de caja: anular revierte el ajuste de arqueo (si hubo diferencia) y sólo se puede anular el último.
+    const antesDeCierre = await okA('GET', '/api/caja');
+    const cierre1 = await okA('POST', '/api/caja/cierre', { contado: antesDeCierre.efectivo + 1000 });
+    assert.equal(cierre1.diferencia, 1000, 'sobraron 1000 respecto de lo esperado');
+    await okA('POST', `/api/caja/cierres/${cierre1.id}/anular`, {});
+    assert.equal((await pedirA('POST', `/api/caja/cierres/${cierre1.id}/anular`, {})).status, 400, 'no se puede anular el mismo cierre dos veces');
+    const cajaTrasAnular = await okA('GET', '/api/caja');
+    assert.ok(
+      cajaTrasAnular.movimientos.some((m) => m.categoria === 'Anulación de cierre' && m.tipo === 'egreso' && m.monto === 1000),
+      'revierte el ajuste de arqueo que había dejado el cierre',
+    );
+    const cierre2 = await okA('POST', '/api/caja/cierre', { contado: (await okA('GET', '/api/caja')).efectivo });
+    const cierre3 = await okA('POST', '/api/caja/cierre', { contado: (await okA('GET', '/api/caja')).efectivo });
+    assert.equal((await pedirA('POST', `/api/caja/cierres/${cierre2.id}/anular`, {})).status, 400, 'hay un cierre posterior: no se puede anular uno de en medio');
+    await okA('POST', `/api/caja/cierres/${cierre3.id}/anular`, {});
   } finally {
     proc.kill();
     await new Promise((r) => setTimeout(r, 300));
