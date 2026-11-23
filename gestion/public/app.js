@@ -350,12 +350,19 @@ function formProducto(p, proveedores) {
 
 async function formStock(p) {
   const movs = await api('GET', `productos/${p.id}/movimientos`);
-  const m = abrirModal(`Stock de ${p.nombre}`, h`<p>Stock actual: <strong>${p.stock}</strong></p>
+  const otrasSucursales = op.sucursales.filter((s) => s !== sucursalActual);
+  const m = abrirModal(`Stock de ${p.nombre}`, h`<p>Stock actual en ${sucursalActual}: <strong>${p.stock}</strong></p>
     <form class="form" id="fs">
       <label class="f">Sumar o restar<input name="cantidad" type="number" step="1" required placeholder="Ej: 5 o -1"></label>
       <label class="f">Motivo<input name="motivo" list="motivos" required><datalist id="motivos"><option value="Conteo de stock"></option><option value="Rotura o pérdida"></option><option value="Regalo o muestra"></option><option value="Carga inicial"></option></datalist></label>
       <div class="modal-foot full"><button class="btn primary">Registrar ajuste</button></div>
     </form>
+    ${otrasSucursales.length > 0 && h`<h2>Transferir a otro local</h2>
+    <form class="form" id="ft">
+      <label class="f">Cantidad<input name="cantidad" type="number" min="1" step="1" required></label>
+      <label class="f">A<select name="destino">${opciones(otrasSucursales)}</select></label>
+      <div class="modal-foot full"><button class="btn primary">Transferir</button></div>
+    </form>`}
     <h2>Últimos movimientos</h2>
     ${movs.length ? h`<table><tbody>${movs.slice(0, 12).map((x) => h`<tr><td>${fechaHora(x.fecha)}</td><td>${x.motivo}</td><td class="n ${x.cantidad < 0 ? 'neg' : 'pos'}">${x.cantidad > 0 ? '+' : ''}${x.cantidad}</td></tr>`)}</tbody></table>` : h`<p class="hint">Sin movimientos todavía.</p>`}`);
   $('#fs', m).addEventListener('submit', intentar(async (e) => {
@@ -363,6 +370,13 @@ async function formStock(p) {
     await api('POST', `productos/${p.id}/ajuste`, leerForm(e.target));
     cerrarModal();
     aviso('Stock actualizado');
+    refrescar();
+  }));
+  $('#ft', m)?.addEventListener('submit', intentar(async (e) => {
+    e.preventDefault();
+    await api('POST', `productos/${p.id}/transferir`, leerForm(e.target));
+    cerrarModal();
+    aviso('Stock transferido');
     refrescar();
   }));
 }

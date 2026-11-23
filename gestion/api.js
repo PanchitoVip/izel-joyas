@@ -482,6 +482,18 @@ export function crearApi(db) {
     return { ok: true };
   });
   ruta('GET', '/api/productos/:id/movimientos', ({ id, sucursal }) => db.all('SELECT * FROM movimientos_stock WHERE producto_id = ? AND sucursal = ? ORDER BY id DESC LIMIT 100', id, sucursal));
+  ruta('POST', '/api/productos/:id/transferir', ({ id, b, sucursal }) => {
+    existe('productos', id);
+    if (!SUCURSALES.includes(b.destino) || b.destino === sucursal) falla('Local de destino no válido');
+    const cantidad = entero(b.cantidad, 'La cantidad', 1);
+    const stockActual = db.get('SELECT cantidad FROM stock_sucursal WHERE producto_id = ? AND sucursal = ?', id, sucursal)?.cantidad || 0;
+    if (stockActual < cantidad) falla(`No hay suficiente stock en ${sucursal} (hay ${stockActual})`, 409);
+    db.tx(() => {
+      moverStock(sucursal, id, -cantidad, `Transferencia a ${b.destino}`);
+      moverStock(b.destino, id, cantidad, `Transferencia desde ${sucursal}`);
+    });
+    return { ok: true };
+  });
   ruta('POST', '/api/productos/precios', ({ b }) => {
     const porcentaje = Number(b.porcentaje);
     if (!Number.isFinite(porcentaje) || porcentaje <= -100 || porcentaje > 1000 || porcentaje === 0) falla('Porcentaje no válido');

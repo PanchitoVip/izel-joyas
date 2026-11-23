@@ -929,6 +929,19 @@ test('anular compra, factura duplicada y límite de crédito (servidor propio, n
       (await okA('POST', '/api/productos', { nombre: 'Precio bajo costo sin publicar', categoria: 'Anillos', costo: 100000, precio: 50000 })).id,
       'sin publicar no avisa: todavía se está cargando el producto',
     );
+
+    // Transferencia de stock entre sucursales: descuenta en el origen, suma en el destino, no deja el origen en negativo.
+    const { id: pidTransf } = await okA('POST', '/api/productos', { nombre: 'Para transferir', categoria: 'Anillos', precio: 100000, stock: 5 });
+    const sinStock = await pedirA('POST', `/api/productos/${pidTransf}/transferir`, { cantidad: 10, destino: 'Morón' });
+    assert.equal(sinStock.status, 409, 'sólo hay 5 unidades en Moreno, no se pueden transferir 10');
+    await okA('POST', `/api/productos/${pidTransf}/transferir`, { cantidad: 3, destino: 'Morón' });
+    assert.equal((await okA('GET', '/api/productos')).find((p) => p.id === pidTransf).stock, 2, 'a Moreno le quedaron 2');
+    await okA('POST', '/api/sucursal', { sucursal: 'Morón' });
+    assert.equal((await okA('GET', '/api/productos')).find((p) => p.id === pidTransf).stock, 3, 'a Morón le llegaron las 3 transferidas');
+    const aMoreno = await pedirA('POST', `/api/productos/${pidTransf}/transferir`, { cantidad: 1, destino: 'Moreno' });
+    assert.equal(aMoreno.status, 200, 'la transferencia funciona en los dos sentidos');
+    await okA('POST', '/api/sucursal', { sucursal: 'Moreno' });
+    assert.equal((await okA('GET', '/api/productos')).find((p) => p.id === pidTransf).stock, 3, 'Moreno recuperó 1 (2 + 1)');
   } finally {
     proc.kill();
     await new Promise((r) => setTimeout(r, 300));
