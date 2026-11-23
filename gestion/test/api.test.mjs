@@ -137,7 +137,7 @@ test('sólo aparecen en el catálogo los productos publicados', async () => {
   const antes = await ok('GET', '/api/catalogo');
   assert.ok(!antes.productos.some((p) => p.nombre === 'Oculto'));
   const p = (await ok('GET', '/api/productos')).find((x) => x.id === id);
-  await ok('PUT', `/api/productos/${id}`, { ...p, publicado: true });
+  await ok('PUT', `/api/productos/${id}`, { ...p, publicado: true, permitir_costo_cero: true });
   assert.ok((await ok('GET', '/api/catalogo')).productos.some((x) => x.nombre === 'Oculto'));
   await ok('DELETE', `/api/productos/${id}`);
   assert.ok(!(await ok('GET', '/api/catalogo')).productos.some((x) => x.nombre === 'Oculto'));
@@ -614,6 +614,7 @@ test('catálogo desde Google Drive: conecta, sincroniza, excluye Fornituras y no
     dijes: { id: 'dijes', name: 'Dijes ac', mimeType: 'application/vnd.google-apps.folder', parents: ['raiz'] },
     broche: { id: 'broche', name: 'broche.jpg', mimeType: 'image/jpeg', parents: ['fornituras'], contenido: JPG },
     foto1: { id: 'foto1', name: 'D3767.jpg', mimeType: 'image/jpeg', parents: ['dijes'], contenido: JPG },
+    fallida: { id: 'fallida', name: 'D3800.jpg', mimeType: 'image/jpeg', parents: ['dijes'], contenido: JPG },
     foto2: { id: 'foto2', name: 'D3814.jpg', mimeType: 'image/jpeg', parents: ['dijes'], contenido: JPG },
     heic: { id: 'heic', name: 'foto-iphone.heic', mimeType: 'image/heic', parents: ['dijes'], contenido: NO_IMAGEN },
   };
@@ -658,6 +659,10 @@ test('catálogo desde Google Drive: conecta, sincroniza, excluye Fornituras y no
       }
       const m = /^\/drive\/files\/([^/]+)$/.exec(u.pathname);
       if (m && u.searchParams.get('alt') === 'media') {
+        // Imita un corte de red o un error puntual de Google al bajar UNA sola foto en medio de
+        // la carpeta: no tiene que frenar la sincronización de las demás (bug real que afectó a
+        // una sincronización de casi 5000 productos en producción).
+        if (m[1] === 'fallida') { res.writeHead(500); res.end(); return; }
         const a = archivos[m[1]];
         if (a?.parents.includes('fornituras')) descargasDeFornituras += 1;
         if (!a) { res.writeHead(404); res.end(); return; }
@@ -741,8 +746,10 @@ test('catálogo desde Google Drive: conecta, sincroniza, excluye Fornituras y no
 
     const r1 = await pedirD('POST', '/api/drive/sincronizar', {});
     assert.equal(r1.status, 200);
-    assert.equal(r1.data.nuevos, 2, 'sólo las 2 fotos de Dijes ac; Fornituras queda afuera y el .heic se omite');
-    assert.deepEqual(r1.data.omitidos, ['foto-iphone.heic']);
+    assert.equal(r1.data.nuevos, 2, 'las 2 fotos de Dijes ac que sí se pudieron bajar; Fornituras queda afuera, el .heic se omite y la que falla al descargar también');
+    assert.equal(r1.data.omitidos.length, 2);
+    assert.ok(r1.data.omitidos.includes('foto-iphone.heic'));
+    assert.ok(r1.data.omitidos.some((m) => m.includes('D3800.jpg') && m.includes('no se pudo descargar')), 'avisa cuál fue y por qué, no sólo que algo falló');
     assert.equal(descargasDeFornituras, 0, 'nunca se descarga nada de la carpeta excluida');
 
     const productos = (await pedirD('GET', '/api/productos')).data;
@@ -942,6 +949,35 @@ test('anular compra, factura duplicada y límite de crédito (servidor propio, n
     assert.equal(aMoreno.status, 200, 'la transferencia funciona en los dos sentidos');
     await okA('POST', '/api/sucursal', { sucursal: 'Moreno' });
     assert.equal((await okA('GET', '/api/productos')).find((p) => p.id === pidTransf).stock, 3, 'Moreno recuperó 1 (2 + 1)');
+
+    // Una compra que le cambia el proveedor habitual a un producto avisa, no bloquea si se confirma.
+    const { id: provA } = await okA('POST', '/api/proveedores', { nombre: 'Proveedor habitual' });
+    const { id: provB } = await okA('POST', '/api/proveedores', { nombre: 'Proveedor de respaldo' });
+    const { id: pidProv } = await okA('POST', '/api/productos', { nombre: 'Con proveedor habitual', categoria: 'Anillos', precio: 100000 });
+    await okA('POST', '/api/compras', { proveedor_id: provA, items: [{ producto_id: pidProv, cantidad: 1, costo: 1000 }] });
+    const cambio = await pedirA('POST', '/api/compras', { proveedor_id: provB, items: [{ producto_id: pidProv, cantidad: 1, costo: 1000 }] });
+    assert.equal(cambio.status, 409, 'el producto ya tenía cargado el proveedor A');
+    await okA('POST', '/api/compras', {
+      proveedor_id: provB, items: [{ producto_id: pidProv, cantidad: 1, costo: 1000 }], permitir_cambiar_proveedor: true,
+    });
+    assert.equal((await okA('GET', '/api/productos')).find((p) => p.id === pidProv).proveedor_id, provB, 'con permitir_cambiar_proveedor sí se puede: puede ser una compra de respaldo a otro proveedor');
+
+    // Cargar el mismo número de factura/CAE en dos ventas distintas avisa, no bloquea si se confirma.
+    const { id: pidFact } = await okA('POST', '/api/productos', { nombre: 'Para factura ARCA', categoria: 'Anillos', precio: 100000, stock: 2 });
+    const ventaA = await okA('POST', '/api/ventas', { tipo: 'Venta con factura ARCA', items: [{ producto_id: pidFact, cantidad: 1, precio: 100000 }], pagos: [{ medio: 'Efectivo', monto: 100000 }] });
+    const ventaB = await okA('POST', '/api/ventas', { tipo: 'Venta con factura ARCA', items: [{ producto_id: pidFact, cantidad: 1, precio: 100000 }], pagos: [{ medio: 'Efectivo', monto: 100000 }] });
+    await okA('PUT', `/api/ventas/${ventaA.id}/factura`, { factura_arca: 'A-0001-00001234' });
+    const factRep = await pedirA('PUT', `/api/ventas/${ventaB.id}/factura`, { factura_arca: 'A-0001-00001234' });
+    assert.equal(factRep.status, 409, 'esa venta A ya usó ese número de factura/CAE');
+    await okA('PUT', `/api/ventas/${ventaB.id}/factura`, { factura_arca: 'A-0001-00001234', permitir_duplicado: true });
+
+    // Publicar un producto con costo $0 avisa, no bloquea si se confirma.
+    const costoCero = await pedirA('POST', '/api/productos', { nombre: 'Costo cero', categoria: 'Anillos', precio: 100000, publicado: true });
+    assert.equal(costoCero.status, 409, 'se publica con costo $0: la ganancia de cada venta no descontaría ningún costo');
+    assert.ok(
+      (await okA('POST', '/api/productos', { nombre: 'Costo cero', categoria: 'Anillos', precio: 100000, publicado: true, permitir_costo_cero: true })).id,
+      'con permitir_costo_cero sí se puede: puede ser un regalo o una muestra a propósito',
+    );
   } finally {
     proc.kill();
     await new Promise((r) => setTimeout(r, 300));

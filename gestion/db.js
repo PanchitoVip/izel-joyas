@@ -99,28 +99,39 @@ function migrarASucursales(raw) {
   const agregarColumna = (tabla, columna, definicion) => {
     if (!columnasDe(tabla).includes(columna)) raw.exec(`ALTER TABLE ${tabla} ADD COLUMN ${columna} ${definicion}`);
   };
-  for (const tabla of ['sesiones', 'clientes', 'ventas', 'caja', 'compras', 'cierres_caja', 'arreglos', 'movimientos_stock', 'cuenta_corriente']) {
-    agregarColumna(tabla, 'sucursal', `TEXT NOT NULL DEFAULT '${SUCURSAL_POR_DEFECTO}'`);
-  }
-  // Para bases de antes del login con Google: la sesión no tenía mail asociado.
-  agregarColumna('sesiones', 'email', `TEXT NOT NULL DEFAULT ''`);
-  // Para bases de antes de guardar, en cada cierre, hasta qué movimiento de caja quedó contado
-  // (se usa para no dejar borrar un movimiento que ya quedó dentro de un cierre hecho).
-  agregarColumna('cierres_caja', 'hasta_movimiento_id', 'INTEGER NOT NULL DEFAULT 0');
-  // Para bases de antes de la sincronización con Google Drive: marca qué productos vienen de ahí,
-  // para no duplicarlos ni pisar los que ya se cargaron a mano.
-  agregarColumna('productos', 'drive_file_id', 'TEXT');
-  raw.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_drive_file_id ON productos (drive_file_id) WHERE drive_file_id IS NOT NULL');
-  // Para poder anular una compra (como ya se podía con una venta) y un cierre de caja.
-  agregarColumna('compras', 'estado', `TEXT NOT NULL DEFAULT 'ok'`);
-  agregarColumna('cierres_caja', 'estado', `TEXT NOT NULL DEFAULT 'ok'`);
-  // 0 = sin límite. Para avisar antes de dejar fiar de más a un cliente.
-  agregarColumna('clientes', 'limite_credito', 'INTEGER NOT NULL DEFAULT 0');
-  if (columnasDe('productos').includes('stock')) {
-    raw.exec(`INSERT INTO stock_sucursal (producto_id, sucursal, cantidad, stock_minimo)
-      SELECT id, '${SUCURSAL_POR_DEFECTO}', stock, stock_minimo FROM productos`);
-    raw.exec('ALTER TABLE productos DROP COLUMN stock');
-    raw.exec('ALTER TABLE productos DROP COLUMN stock_minimo');
+  // Todo en una sola transacción: si el proceso se corta a mitad de camino (se va la luz, se llena
+  // el disco), que quede la base vieja intacta para reintentar, no una mezcla a medio migrar que no
+  // arranque nunca más (ej. con la columna "stock" ya sumada a stock_sucursal pero sin borrar de
+  // productos todavía, lo que repetiría el INSERT y chocaría con la clave primaria en el próximo intento).
+  raw.exec('BEGIN IMMEDIATE');
+  try {
+    for (const tabla of ['sesiones', 'clientes', 'ventas', 'caja', 'compras', 'cierres_caja', 'arreglos', 'movimientos_stock', 'cuenta_corriente']) {
+      agregarColumna(tabla, 'sucursal', `TEXT NOT NULL DEFAULT '${SUCURSAL_POR_DEFECTO}'`);
+    }
+    // Para bases de antes del login con Google: la sesión no tenía mail asociado.
+    agregarColumna('sesiones', 'email', `TEXT NOT NULL DEFAULT ''`);
+    // Para bases de antes de guardar, en cada cierre, hasta qué movimiento de caja quedó contado
+    // (se usa para no dejar borrar un movimiento que ya quedó dentro de un cierre hecho).
+    agregarColumna('cierres_caja', 'hasta_movimiento_id', 'INTEGER NOT NULL DEFAULT 0');
+    // Para bases de antes de la sincronización con Google Drive: marca qué productos vienen de ahí,
+    // para no duplicarlos ni pisar los que ya se cargaron a mano.
+    agregarColumna('productos', 'drive_file_id', 'TEXT');
+    raw.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_drive_file_id ON productos (drive_file_id) WHERE drive_file_id IS NOT NULL');
+    // Para poder anular una compra (como ya se podía con una venta) y un cierre de caja.
+    agregarColumna('compras', 'estado', `TEXT NOT NULL DEFAULT 'ok'`);
+    agregarColumna('cierres_caja', 'estado', `TEXT NOT NULL DEFAULT 'ok'`);
+    // 0 = sin límite. Para avisar antes de dejar fiar de más a un cliente.
+    agregarColumna('clientes', 'limite_credito', 'INTEGER NOT NULL DEFAULT 0');
+    if (columnasDe('productos').includes('stock')) {
+      raw.exec(`INSERT INTO stock_sucursal (producto_id, sucursal, cantidad, stock_minimo)
+        SELECT id, '${SUCURSAL_POR_DEFECTO}', stock, stock_minimo FROM productos`);
+      raw.exec('ALTER TABLE productos DROP COLUMN stock');
+      raw.exec('ALTER TABLE productos DROP COLUMN stock_minimo');
+    }
+    raw.exec('COMMIT');
+  } catch (e) {
+    raw.exec('ROLLBACK');
+    throw e;
   }
 }
 

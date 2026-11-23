@@ -92,6 +92,9 @@ export function crearApi(db) {
     if (publicado && precio > 0 && precio < costo && !b.permitir_precio_bajo_costo) {
       falla('El precio de venta queda por debajo del costo', 409);
     }
+    if (publicado && precio > 0 && costo === 0 && !b.permitir_costo_cero) {
+      falla('El producto se publica con costo $0: la ganancia de cada venta no va a descontar ningún costo', 409);
+    }
     return {
       nombre: requerido(b.nombre, 'el nombre', 120),
       descripcion: texto(b.descripcion, 500),
@@ -238,7 +241,13 @@ export function crearApi(db) {
       const id = Number(lastInsertRowid);
       const etiqueta = `Compra${comprobante ? ` ${comprobante}` : ` N° ${id}`}`;
       for (const i of items) {
-        db.get('SELECT id FROM productos WHERE id = ? AND activo = 1', i.producto_id) || falla('Producto inexistente');
+        const producto = db.get('SELECT id, nombre, proveedor_id FROM productos WHERE id = ? AND activo = 1', i.producto_id) || falla('Producto inexistente');
+        // Si el producto ya tenía otro proveedor cargado, avisa antes de pisarlo: puede ser una
+        // compra de respaldo a otro proveedor, no necesariamente un cambio permanente de quién
+        // se lo provee habitualmente.
+        if (producto.proveedor_id && producto.proveedor_id !== proveedorId && !b.permitir_cambiar_proveedor) {
+          falla(`${producto.nombre} ya tiene cargado otro proveedor habitual`, 409);
+        }
         db.run('INSERT INTO compra_items (compra_id, producto_id, cantidad, costo) VALUES (?, ?, ?, ?)', id, i.producto_id, i.cantidad, i.costo);
         db.run('UPDATE productos SET costo = ?, proveedor_id = ? WHERE id = ?', i.costo, proveedorId, i.producto_id);
         moverStock(sucursal, i.producto_id, i.cantidad, etiqueta, 'compra', id);
@@ -341,6 +350,10 @@ export function crearApi(db) {
         `SELECT p.id, p.codigo, p.nombre, s.cantidad stock, s.stock_minimo FROM stock_sucursal s JOIN productos p ON p.id = s.producto_id
          WHERE p.activo = 1 AND s.sucursal = ? AND s.stock_minimo > 0 AND s.cantidad <= s.stock_minimo ORDER BY s.cantidad LIMIT 12`, sucursal,
       ),
+      stock_bajo_total: db.get(
+        `SELECT COUNT(*) n FROM stock_sucursal s JOIN productos p ON p.id = s.producto_id
+         WHERE p.activo = 1 AND s.sucursal = ? AND s.stock_minimo > 0 AND s.cantidad <= s.stock_minimo`, sucursal,
+      ).n,
       por_revisar: db.get('SELECT COUNT(*) n FROM productos WHERE activo = 1 AND (revisar = 1 OR precio = 0)').n,
       cumpleanos: db.all(
         `SELECT id, nombre, telefono, cumpleanos FROM clientes WHERE activo = 1 AND sucursal = ? AND SUBSTR(cumpleanos, 6, 5) IN (${proximos.map(() => '?').join(',')})`,
@@ -665,7 +678,14 @@ export function crearApi(db) {
   ruta('POST', '/api/ventas/:id/anular', ({ id, sucursal }) => anularVenta(id, sucursal));
   ruta('PUT', '/api/ventas/:id/factura', ({ id, b, sucursal }) => {
     verVenta(id, sucursal);
-    db.run('UPDATE ventas SET factura_arca = ? WHERE id = ?', texto(b.factura_arca, 80), id);
+    const factura = texto(b.factura_arca, 80);
+    if (factura && !b.permitir_duplicado) {
+      const repetida = db.get(
+        `SELECT id FROM ventas WHERE sucursal = ? AND id != ? AND estado = 'ok' AND factura_arca = ?`, sucursal, id, factura,
+      );
+      if (repetida) falla(`La venta N° ${repetida.id} ya tiene cargado ese mismo número de factura o CAE`, 409);
+    }
+    db.run('UPDATE ventas SET factura_arca = ? WHERE id = ?', factura, id);
     return { ok: true };
   });
 

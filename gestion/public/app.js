@@ -253,7 +253,7 @@ VISTAS.inicio = async (v) => {
     </div>
     <div class="cols">
       <section class="card wide"><h2>Ventas de los últimos 30 días</h2>${graficoVentas(r.serie, r.desde_serie)}</section>
-      <section class="card"><h2>Stock bajo</h2>${r.stock_bajo.length ? h`<table><tbody>${r.stock_bajo.map((p) => h`<tr><td>${p.nombre}</td><td class="n"><span class="tag ${p.stock <= 0 ? 'bad' : 'warn'}">${p.stock} / mín. ${p.stock_minimo}</span></td></tr>`)}</tbody></table>` : h`<p class="hint">Nada por reponer. Definí el stock mínimo en cada producto para recibir avisos.</p>`}</section>
+      <section class="card"><h2>Stock bajo</h2>${r.stock_bajo.length ? h`<table><tbody>${r.stock_bajo.map((p) => h`<tr><td>${p.nombre}</td><td class="n"><span class="tag ${p.stock <= 0 ? 'bad' : 'warn'}">${p.stock} / mín. ${p.stock_minimo}</span></td></tr>`)}</tbody></table>${r.stock_bajo_total > r.stock_bajo.length ? h`<p class="hint">Y ${r.stock_bajo_total - r.stock_bajo.length} más. <a href="#/productos/bajo">Ver todos</a>.</p>` : ''}` : h`<p class="hint">Nada por reponer. Definí el stock mínimo en cada producto para recibir avisos.</p>`}</section>
       <section class="card"><h2>Cumpleaños próximos</h2>${r.cumpleanos.length ? h`<table><tbody>${r.cumpleanos.map((c) => h`<tr><td>${c.nombre}</td><td>${fecha(c.cumpleanos).slice(0, 5)}</td><td class="actions">${c.telefono && h`<a class="btn small" target="_blank" rel="noopener" href="${linkWa(c.telefono, `¡Hola ${c.nombre}! Desde Izel Joyas te deseamos un muy feliz cumpleaños.`)}">Saludar</a>`}</td></tr>`)}</tbody></table>` : h`<p class="hint">Ninguno en los próximos 14 días.</p>`}</section>
       <section class="card"><h2>Arreglos pendientes</h2>${r.arreglos.length ? h`<table><tbody>${r.arreglos.map((a) => h`<tr><td>${a.cliente || 'Sin cliente'}<br><span class="hint">${a.descripcion}</span></td><td class="n">${a.fecha_entrega ? fecha(a.fecha_entrega) : ''}<br>${tagArreglo(a.estado)}</td></tr>`)}</tbody></table>` : h`<p class="hint">No hay arreglos en curso.</p>`}</section>
     </div>`;
@@ -326,14 +326,22 @@ function formProducto(p, proveedores) {
       ...d, imagen, costo: aCentavos(d.costo), precio: aCentavos(d.precio), stock_minimo: Number(d.stock_minimo || 0),
       stock: Number(d.stock || 0), publicado: Boolean(d.publicado), destacado: Boolean(d.destacado),
     };
-    try {
-      if (nuevo) await api('POST', 'productos', cuerpo); else await api('PUT', `productos/${p.id}`, cuerpo);
-    } catch (err) {
-      if (err.status === 409 && await confirmar('Precio por debajo del costo', `${err.message}. ¿Guardar igual?`, 'Guardar igual')) {
-        const forzado = { ...cuerpo, permitir_precio_bajo_costo: true };
-        if (nuevo) await api('POST', 'productos', forzado); else await api('PUT', `productos/${p.id}`, forzado);
-      } else if (err.status !== 409) throw err;
-      else return;
+    // Hay dos avisos posibles (409) que no bloquean, sólo confirman: precio por debajo del costo y
+    // costo en $0. Reintenta sumando el permiso que corresponda hasta que no quede ninguno.
+    for (;;) {
+      try {
+        if (nuevo) await api('POST', 'productos', cuerpo); else await api('PUT', `productos/${p.id}`, cuerpo);
+        break;
+      } catch (err) {
+        if (err.status !== 409) throw err;
+        if (err.message.includes('costo $0')) {
+          if (!await confirmar('Costo en $0', `${err.message}. ¿Guardar igual?`, 'Guardar igual')) return;
+          cuerpo.permitir_costo_cero = true;
+        } else {
+          if (!await confirmar('Precio por debajo del costo', `${err.message}. ¿Guardar igual?`, 'Guardar igual')) return;
+          cuerpo.permitir_precio_bajo_costo = true;
+        }
+      }
     }
     op = await api('GET', 'opciones');
     cerrarModal();
@@ -400,7 +408,7 @@ function formPrecios() {
 
 VISTAS.productos = async (v, param) => {
   const [lista, proveedores] = await Promise.all([api('GET', 'productos'), api('GET', 'proveedores')]);
-  if (param === 'revisar') filtroProductos.vista = 'revisar';
+  if (param === 'revisar' || param === 'bajo') filtroProductos.vista = param;
   v.innerHTML = h`
     <div class="head"><h1>Stock</h1><div class="head-actions">
       <button class="btn" id="precios" type="button">Actualizar precios</button>
@@ -444,7 +452,7 @@ VISTAS.productos = async (v, param) => {
 let filtroCatalogo = { soloRevisar: false };
 function tarjetaCatalogo(p) {
   return h`<div class="cat-card">
-    <button class="cat-foto" type="button" data-ver="${p.id}" title="Editar precio, costo y más"><img src="${urlImagen(p.imagen)}" alt="">${p.revisar ? h`<span class="tag warn cat-badge">Revisar</span>` : ''}</button>
+    <button class="cat-foto" type="button" data-ver="${p.id}" title="Editar precio, costo y más"><img src="${urlImagen(p.imagen)}" alt="${p.nombre || 'Producto sin nombre todavía'}" loading="lazy">${p.revisar ? h`<span class="tag warn cat-badge">Revisar</span>` : ''}</button>
     <label class="f">Nombre<input data-campo="nombre" data-id="${p.id}" value="${p.nombre}" placeholder="Sin nombre todavía"></label>
     <label class="f">Categoría<input data-campo="categoria" data-id="${p.id}" list="cats-catalogo" value="${p.categoria}"></label>
   </div>`;
@@ -869,7 +877,15 @@ async function verVenta(v, id) {
   $('#print').addEventListener('click', () => { $('#imprimir').innerHTML = recibo(venta, ajustes); window.print(); });
   $('#ff').addEventListener('submit', intentar(async (e) => {
     e.preventDefault();
-    await api('PUT', `ventas/${id}/factura`, leerForm(e.target));
+    const d = leerForm(e.target);
+    try {
+      await api('PUT', `ventas/${id}/factura`, d);
+    } catch (err) {
+      if (err.status === 409 && await confirmar('Número repetido', `${err.message}. ¿Guardarlo igual?`, 'Guardar igual')) {
+        await api('PUT', `ventas/${id}/factura`, { ...d, permitir_duplicado: true });
+      } else if (err.status !== 409) throw err;
+      else return;
+    }
     aviso('Guardado');
     refrescar();
   }));
@@ -930,13 +946,22 @@ async function formCompra() {
     if (!items.length) { aviso('Agregá al menos un producto', true); return; }
     const d = leerForm(e.target);
     const cuerpo = { ...d, items, pago_monto: aCentavos(d.pago_monto) };
-    try {
-      await api('POST', 'compras', cuerpo);
-    } catch (err) {
-      if (err.status === 409 && await confirmar('Comprobante repetido', `${err.message}. ¿Registrarla igual?`, 'Registrar igual')) {
-        await api('POST', 'compras', { ...cuerpo, permitir_duplicado: true });
-      } else if (err.status !== 409) throw err;
-      else return;
+    // Hay dos avisos posibles (409) que no bloquean, sólo confirman: comprobante repetido y cambio
+    // de proveedor habitual. Reintenta sumando el permiso que corresponda hasta que no quede ninguno.
+    for (;;) {
+      try {
+        await api('POST', 'compras', cuerpo);
+        break;
+      } catch (err) {
+        if (err.status !== 409) throw err;
+        if (err.message.includes('otro proveedor habitual')) {
+          if (!await confirmar('Cambio de proveedor', `${err.message}. ¿Cambiarlo igual?`, 'Cambiar igual')) return;
+          cuerpo.permitir_cambiar_proveedor = true;
+        } else {
+          if (!await confirmar('Comprobante repetido', `${err.message}. ¿Registrarla igual?`, 'Registrar igual')) return;
+          cuerpo.permitir_duplicado = true;
+        }
+      }
     }
     cerrarModal();
     aviso('Compra registrada: stock y costos actualizados');

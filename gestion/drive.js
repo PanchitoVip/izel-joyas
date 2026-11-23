@@ -159,7 +159,16 @@ export async function sincronizar(db, opts) {
     const idsEncontrados = new Set(encontrados.map((f) => f.id));
     for (const img of encontrados) {
       if (db.get('SELECT id FROM productos WHERE drive_file_id = ?', img.id)) continue;
-      const binario = await descargarImagenDrive(accessToken, img.id, opts);
+      // Una sola foto que falle al bajar (corte de red, Google que devuelve un error puntual) no
+      // puede frenar las miles que quedan atrás en la carpeta: se la salta y sigue con el resto.
+      // Como no se llegó a insertar, la próxima corrida la vuelve a intentar sola.
+      let binario;
+      try {
+        binario = await descargarImagenDrive(accessToken, img.id, opts);
+      } catch (e) {
+        omitidos.push(`${img.nombre} (no se pudo descargar: ${e.message})`);
+        continue;
+      }
       const ext = extensionImagen(binario);
       if (!ext) { omitidos.push(img.nombre); continue; }
       const nombreArchivo = `${crypto.randomBytes(12).toString('hex')}.jpg`;
