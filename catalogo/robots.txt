@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://izel-joyas.netlify.app/sitemap.xml
