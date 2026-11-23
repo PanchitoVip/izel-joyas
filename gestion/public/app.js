@@ -488,7 +488,8 @@ const ENTIDADES = {
   clientes: {
     titulo: 'Clientes', singular: 'cliente', saldoTexto: 'Te debe', saldoFavor: 'Tiene a favor',
     campos: [['nombre', 'Nombre y apellido', 'text', true], ['telefono', 'Teléfono / WhatsApp'], ['email', 'Email', 'email'], ['documento', 'DNI o CUIT'],
-      ['cumpleanos', 'Cumpleaños', 'date'], ['talle_anillo', 'Talle de anillo'], ['direccion', 'Dirección'], ['notas', 'Notas (gustos, regalos)']],
+      ['cumpleanos', 'Cumpleaños', 'date'], ['talle_anillo', 'Talle de anillo'], ['direccion', 'Dirección'],
+      ['limite_credito', 'Límite de fiado ($, vacío = sin límite)', 'number'], ['notas', 'Notas (gustos, regalos)']],
   },
   proveedores: {
     titulo: 'Proveedores', singular: 'proveedor', saldoTexto: 'Le debés', saldoFavor: 'Tenés a favor',
@@ -500,14 +501,16 @@ const ENTIDADES = {
 function formEntidad(tabla, x = {}) {
   const e = ENTIDADES[tabla];
   const m = abrirModal(x.id ? `Editar ${x.nombre}` : `Nuevo ${e.singular}`, h`<form class="form" id="fe">
-    ${e.campos.map(([k, t, tipo = 'text', req]) => h`<label class="f">${t}<input name="${k}" type="${tipo}" value="${x[k] || ''}" ${req ? 'required' : ''}></label>`)}
+    ${e.campos.map(([k, t, tipo = 'text', req]) => h`<label class="f">${t}<input name="${k}" type="${tipo}" value="${k === 'limite_credito' ? aPesos(x[k]) : (x[k] || '')}" ${req ? 'required' : ''} ${tipo === 'number' ? 'min="0" step="0.01"' : ''}></label>`)}
     <div class="modal-foot full">
       ${x.id && h`<button class="btn danger" id="borrar" type="button">Eliminar</button>`}<span class="grow"></span>
       <button class="btn" data-cerrar type="button">Cancelar</button><button class="btn primary">Guardar</button></div></form>`);
   $$('[data-cerrar]', m).forEach((b) => b.addEventListener('click', cerrarModal));
   $('#fe', m).addEventListener('submit', intentar(async (ev) => {
     ev.preventDefault();
-    if (x.id) await api('PUT', `${tabla}/${x.id}`, leerForm(ev.target)); else await api('POST', tabla, leerForm(ev.target));
+    const d = leerForm(ev.target);
+    if (d.limite_credito !== undefined) d.limite_credito = aCentavos(d.limite_credito);
+    if (x.id) await api('PUT', `${tabla}/${x.id}`, d); else await api('POST', tabla, d);
     cerrarModal();
     aviso('Guardado');
     refrescar();
@@ -725,7 +728,7 @@ VISTAS.venta = async (v) => {
     pintarPagos();
   });
 
-  async function confirmarVenta(permitir = false) {
+  async function confirmarVenta(permitirStock = false, permitirCredito = false) {
     if (!venta.items.length) { aviso('Agregá al menos un producto', true); return; }
     const cuerpo = {
       tipo: $('#tipo').value,
@@ -735,16 +738,23 @@ VISTAS.venta = async (v) => {
       recargo: venta.recargo,
       pagos: venta.pagos.map((p, n) => ({ medio: p.medio, monto: p.monto ?? (n === 0 ? total() : 0) })),
       notas: $('#notas').value,
-      permitir_sin_stock: permitir,
+      permitir_sin_stock: permitirStock,
+      permitir_exceder_credito: permitirCredito,
     };
     try {
       const r = await api('POST', 'ventas', cuerpo);
       aviso(`Venta N° ${r.numero} registrada`);
       location.hash = `#/ventas/${r.id}`;
     } catch (e) {
-      if (e.status === 409 && await confirmar('Sin stock suficiente', `${e.message}. ¿Vender igual? El stock va a quedar en negativo hasta que lo corrijas.`, 'Vender igual')) {
-        await confirmarVenta(true);
-      } else if (e.status !== 409) aviso(e.message, true);
+      if (e.status === 409 && e.message.includes('Sin stock suficiente')) {
+        if (await confirmar('Sin stock suficiente', `${e.message}. ¿Vender igual? El stock va a quedar en negativo hasta que lo corrijas.`, 'Vender igual')) {
+          await confirmarVenta(true, permitirCredito);
+        }
+      } else if (e.status === 409 && e.message.includes('límite de fiado')) {
+        if (await confirmar('Supera el límite de fiado', `${e.message}. ¿Continuar igual?`, 'Vender igual')) {
+          await confirmarVenta(permitirStock, true);
+        }
+      } else aviso(e.message, true);
     }
   }
   $('#cerrar').addEventListener('click', intentar(() => confirmarVenta()));
@@ -857,7 +867,15 @@ async function formCompra() {
     e.preventDefault();
     if (!items.length) { aviso('Agregá al menos un producto', true); return; }
     const d = leerForm(e.target);
-    await api('POST', 'compras', { ...d, items, pago_monto: aCentavos(d.pago_monto) });
+    const cuerpo = { ...d, items, pago_monto: aCentavos(d.pago_monto) };
+    try {
+      await api('POST', 'compras', cuerpo);
+    } catch (err) {
+      if (err.status === 409 && await confirmar('Comprobante repetido', `${err.message}. ¿Registrarla igual?`, 'Registrar igual')) {
+        await api('POST', 'compras', { ...cuerpo, permitir_duplicado: true });
+      } else if (err.status !== 409) throw err;
+      else return;
+    }
     cerrarModal();
     aviso('Compra registrada: stock y costos actualizados');
     refrescar();
@@ -869,9 +887,21 @@ VISTAS.compras = async (v) => {
   v.innerHTML = h`
     <div class="head"><h1>Compras</h1><div class="head-actions"><button class="btn primary" id="nueva" type="button">Registrar compra</button></div></div>
     <p class="hint">Cada compra suma stock, actualiza el costo del producto y registra la deuda con el proveedor.</p>
-    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Comprobante</th><th class="n">Total</th></tr></thead>
-    <tbody>${lista.length ? lista.map((c) => h`<tr><td>${fecha(c.fecha)}</td><td>${c.proveedor}</td><td>${c.comprobante}</td><td class="n">${plata(c.total)}</td></tr>`) : h`<tr><td colspan="4" class="empty">Todavía no hay compras.</td></tr>`}</tbody></table></div>`;
+    <div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Comprobante</th><th class="n">Total</th><th></th><th></th></tr></thead>
+    <tbody id="filas">${lista.length ? lista.map((c) => h`<tr>
+      <td>${fecha(c.fecha)}</td><td>${c.proveedor}</td><td>${c.comprobante}</td><td class="n">${plata(c.total)}</td>
+      <td>${c.estado === 'anulada' ? h`<span class="tag mute">Anulada</span>` : ''}</td>
+      <td class="actions">${c.estado !== 'anulada' ? h`<button class="btn small" data-anular="${c.id}" type="button">Anular</button>` : ''}</td>
+    </tr>`) : h`<tr><td colspan="6" class="empty">Todavía no hay compras.</td></tr>`}</tbody></table></div>`;
   $('#nueva').addEventListener('click', intentar(formCompra));
+  $('#filas').addEventListener('click', intentar(async (e) => {
+    const b = e.target.closest('[data-anular]');
+    if (!b) return;
+    if (!await confirmar('Anular compra', 'Revierte el stock que sumó y la deuda (o el pago) con el proveedor. ¿Confirmás?', 'Anular')) return;
+    await api('POST', `compras/${b.dataset.anular}/anular`, {});
+    aviso('Compra anulada');
+    refrescar();
+  }));
 };
 
 /* ---- Caja ---- */

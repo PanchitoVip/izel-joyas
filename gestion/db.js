@@ -111,6 +111,11 @@ function migrarASucursales(raw) {
   // para no duplicarlos ni pisar los que ya se cargaron a mano.
   agregarColumna('productos', 'drive_file_id', 'TEXT');
   raw.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_productos_drive_file_id ON productos (drive_file_id) WHERE drive_file_id IS NOT NULL');
+  // Para poder anular una compra (como ya se podía con una venta) y un cierre de caja.
+  agregarColumna('compras', 'estado', `TEXT NOT NULL DEFAULT 'ok'`);
+  agregarColumna('cierres_caja', 'estado', `TEXT NOT NULL DEFAULT 'ok'`);
+  // 0 = sin límite. Para avisar antes de dejar fiar de más a un cliente.
+  agregarColumna('clientes', 'limite_credito', 'INTEGER NOT NULL DEFAULT 0');
   if (columnasDe('productos').includes('stock')) {
     raw.exec(`INSERT INTO stock_sucursal (producto_id, sucursal, cantidad, stock_minimo)
       SELECT id, '${SUCURSAL_POR_DEFECTO}', stock, stock_minimo FROM productos`);

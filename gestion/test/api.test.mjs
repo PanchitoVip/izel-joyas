@@ -792,3 +792,81 @@ test('catálogo desde Google Drive: conecta, sincroniza, excluye Fornituras y no
     fs.rmSync(datos, { recursive: true, force: true });
   }
 });
+
+test('anular compra, factura duplicada y límite de crédito (servidor propio, no pisa los contadores compartidos del resto de la suite)', async () => {
+  const puerto = 3115;
+  const urlBase = `http://127.0.0.1:${puerto}`;
+  const datos = fs.mkdtempSync(path.join(os.tmpdir(), 'izel-test-alta-'));
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BASE, env: { ...process.env, PORT: String(puerto), IZEL_DATOS: datos, IZEL_CODIGO_INSTALACION: CODIGO }, stdio: 'ignore',
+  });
+  let cookie = '';
+  const pedirA = async (metodo, ruta, cuerpo) => {
+    const r = await fetch(`${urlBase}${ruta}`, {
+      method: metodo,
+      headers: { ...(cuerpo !== undefined ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}) },
+      body: cuerpo !== undefined ? JSON.stringify(cuerpo) : undefined,
+    });
+    const set = r.headers.get('set-cookie');
+    if (set) cookie = set.split(';')[0];
+    const texto = await r.text();
+    let data; try { data = JSON.parse(texto); } catch { data = texto; }
+    return { status: r.status, data };
+  };
+  const okA = async (...a) => { const r = await pedirA(...a); assert.equal(r.status, 200, `${a[0]} ${a[1]}: ${JSON.stringify(r.data)}`); return r.data; };
+
+  try {
+    for (let i = 0; i < 50; i += 1) {
+      try { await fetch(`${urlBase}/api/sesion`); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
+    }
+    await okA('POST', '/api/instalar', { codigo: CODIGO, clave: CLAVE });
+
+    // Factura/comprobante duplicado del mismo proveedor: avisa, no bloquea si se confirma.
+    const { id: prov } = await okA('POST', '/api/proveedores', { nombre: 'Proveedor para factura duplicada' });
+    const { id: pid } = await okA('POST', '/api/productos', { nombre: 'Producto para factura duplicada', categoria: 'Anillos', precio: 100000 });
+    await okA('POST', '/api/compras', { proveedor_id: prov, comprobante: 'R-9', items: [{ producto_id: pid, cantidad: 1, costo: 1000 }] });
+    const dup = await pedirA('POST', '/api/compras', { proveedor_id: prov, comprobante: 'R-9', items: [{ producto_id: pid, cantidad: 1, costo: 1000 }] });
+    assert.equal(dup.status, 409, 'mismo proveedor y mismo comprobante que la compra anterior');
+    const dupOk = await okA('POST', '/api/compras', {
+      proveedor_id: prov, comprobante: 'R-9', items: [{ producto_id: pid, cantidad: 1, costo: 1000 }], permitir_duplicado: true,
+    });
+    assert.ok(dupOk.id, 'con permitir_duplicado sí se puede, por si de verdad son dos compras con el mismo número');
+
+    // Anular compra: revierte stock, deuda y pago; no deja el stock en negativo; no se puede anular dos veces.
+    // Proveedor y producto propios, para no mezclar esta cuenta corriente con la de la prueba anterior.
+    const { id: prov2 } = await okA('POST', '/api/proveedores', { nombre: 'Proveedor para anular compra' });
+    const { id: pid2 } = await okA('POST', '/api/productos', { nombre: 'Producto para anular compra', categoria: 'Anillos', precio: 999900 });
+    const compra = await okA('POST', '/api/compras', {
+      proveedor_id: prov2, comprobante: 'A-1', items: [{ producto_id: pid2, cantidad: 10, costo: 100000 }],
+      pago_monto: 300000, pago_medio: 'Efectivo',
+    });
+    assert.equal((await okA('GET', '/api/productos')).find((p) => p.id === pid2).stock, 10);
+    assert.equal((await okA('GET', `/api/proveedores/${prov2}/cuenta`)).saldo, 700000);
+    await okA('POST', `/api/productos/${pid2}/ajuste`, { cantidad: -8, motivo: 'Venta de prueba' });
+    const bloqueada = await pedirA('POST', `/api/compras/${compra.id}/anular`, {});
+    assert.equal(bloqueada.status, 400, 'ya se "vendieron" 8 de las 10 unidades, no puede dejar el stock en -8');
+    await okA('POST', `/api/productos/${pid2}/ajuste`, { cantidad: 8, motivo: 'Deshacer para la prueba' });
+    await okA('POST', `/api/compras/${compra.id}/anular`, {});
+    assert.equal((await okA('GET', '/api/productos')).find((p) => p.id === pid2).stock, 0, 'el stock que trajo la compra se revirtió');
+    assert.equal((await okA('GET', `/api/proveedores/${prov2}/cuenta`)).saldo, 0, 'la deuda y el pago de la compra anulada se revirtieron entre los dos');
+    assert.equal((await pedirA('POST', `/api/compras/${compra.id}/anular`, {})).status, 400, 'no se puede anular dos veces');
+
+    // Límite de crédito de un cliente.
+    const { id: clienteId } = await okA('POST', '/api/clientes', { nombre: 'Cliente con límite', limite_credito: 500000 });
+    const { id: productoId } = await okA('POST', '/api/productos', { nombre: 'Para fiar', categoria: 'Anillos', precio: 600000, stock: 5 });
+    const r = await pedirA('POST', '/api/ventas', {
+      tipo: 'Comprobante interno', cliente_id: clienteId, items: [{ producto_id: productoId, cantidad: 1, precio: 600000 }], pagos: [],
+    });
+    assert.equal(r.status, 409, 'el saldo que deja (600000) supera el límite (500000)');
+    assert.match(r.data.error, /límite de fiado/);
+    const venta = await okA('POST', '/api/ventas', {
+      tipo: 'Comprobante interno', cliente_id: clienteId, items: [{ producto_id: productoId, cantidad: 1, precio: 600000 }], pagos: [],
+      permitir_exceder_credito: true,
+    });
+    assert.ok(venta.id, 'con permitir_exceder_credito la dueña puede igual fiarle a un cliente de confianza');
+  } finally {
+    proc.kill();
+    await new Promise((r) => setTimeout(r, 300));
+    fs.rmSync(datos, { recursive: true, force: true });
+  }
+});

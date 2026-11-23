@@ -12,7 +12,7 @@ export const CATEGORIAS_MANUALES = {
   egreso: ['Alquiler', 'Servicios', 'Impuestos', 'Sueldos', 'Publicidad', 'Insumos y packaging', 'Envíos', 'Comisiones', 'Otros gastos', 'Retiro personal'],
 };
 // Movimientos de plata que no son ni ganancia ni gasto: la mercadería entra al resultado por su costo al venderse.
-const FUERA_DE_RESULTADO = ['Venta', 'Cobranza', 'Saldo inicial', 'Aporte', 'Pago a proveedor', 'Retiro personal', 'Anulación de venta', 'Ajuste de arqueo'];
+const FUERA_DE_RESULTADO = ['Venta', 'Cobranza', 'Saldo inicial', 'Aporte', 'Pago a proveedor', 'Retiro personal', 'Anulación de venta', 'Anulación de compra', 'Anulación de pago', 'Ajuste de arqueo'];
 const NO_RESULTADO_SQL = FUERA_DE_RESULTADO.map((c) => `'${c}'`).join(',');
 
 // Se usa tanto para el alta manual de productos como para los que llegan de la sincronización con Google Drive.
@@ -44,7 +44,7 @@ function rango(q) {
 
 export function crearApi(db) {
   const CAMPOS = {
-    clientes: ['nombre', 'telefono', 'email', 'documento', 'direccion', 'cumpleanos', 'talle_anillo', 'notas'],
+    clientes: ['nombre', 'telefono', 'email', 'documento', 'direccion', 'cumpleanos', 'talle_anillo', 'limite_credito', 'notas'],
     proveedores: ['nombre', 'contacto', 'telefono', 'email', 'cuit', 'direccion', 'notas'],
   };
 
@@ -144,6 +144,12 @@ export function crearApi(db) {
       if (pagado > total) falla('Lo cobrado supera el total de la venta');
       const deuda = total - pagado;
       if (deuda > 0 && !clienteId) falla('Para dejar saldo en cuenta corriente hay que elegir un cliente');
+      if (deuda > 0 && clienteId && !b.permitir_exceder_credito) {
+        const cliente = db.get('SELECT nombre, limite_credito FROM clientes WHERE id = ?', clienteId);
+        if (cliente.limite_credito > 0 && saldo('cliente', clienteId, sucursal) + deuda > cliente.limite_credito) {
+          falla(`Esta venta deja a ${cliente.nombre} debiendo más que su límite de fiado`, 409);
+        }
+      }
 
       const numero = db.get('SELECT COALESCE(MAX(numero), 0) + 1 n FROM ventas WHERE tipo = ?', b.tipo).n;
       const costoTotal = items.reduce((s, i) => s + i.costo * i.cantidad, 0);
@@ -201,6 +207,16 @@ export function crearApi(db) {
     const proveedorId = entero(b.proveedor_id, 'Proveedor', 1);
     existe('proveedores', proveedorId);
     if (!Array.isArray(b.items) || !b.items.length) falla('La compra no tiene productos');
+    const comprobante = texto(b.comprobante, 60);
+    // Avisa (no bloquea solo) si ya se cargó una compra con el mismo comprobante a este proveedor:
+    // es fácil escanear o tipear la misma factura dos veces y duplicar stock y deuda sin darse cuenta.
+    if (comprobante && !b.permitir_duplicado) {
+      const repetida = db.get(
+        `SELECT id FROM compras WHERE proveedor_id = ? AND comprobante = ? AND estado = 'ok' AND sucursal = ?`,
+        proveedorId, comprobante, sucursal,
+      );
+      if (repetida) falla(`Ya existe una compra con el comprobante "${comprobante}" para este proveedor`, 409);
+    }
     return db.tx(() => {
       const items = b.items.map((i) => ({
         producto_id: entero(i.producto_id, 'Producto', 1),
@@ -208,7 +224,6 @@ export function crearApi(db) {
         costo: entero(i.costo, 'El costo'),
       }));
       const total = items.reduce((s, i) => s + i.costo * i.cantidad, 0);
-      const comprobante = texto(b.comprobante, 60);
       const { lastInsertRowid } = db.run(
         'INSERT INTO compras (proveedor_id, sucursal, fecha, comprobante, total, notas) VALUES (?, ?, ?, ?, ?, ?)',
         proveedorId, sucursal, ahora(), comprobante, total, texto(b.notas, 300),
@@ -229,6 +244,43 @@ export function crearApi(db) {
         asiento(sucursal, 'proveedor', proveedorId, `Pago de ${etiqueta}`, 0, pago, 'compra', id);
       }
       return { id, total };
+    });
+  }
+
+  function verCompra(id, sucursal) {
+    const c = db.get(
+      `SELECT c.*, p.nombre proveedor FROM compras c JOIN proveedores p ON p.id = c.proveedor_id WHERE c.id = ? AND c.sucursal = ?`, id, sucursal,
+    ) || falla('Compra inexistente', 404);
+    c.items = db.all('SELECT * FROM compra_items WHERE compra_id = ?', id);
+    c.pagos = db.all(`SELECT medio, monto FROM caja WHERE ref_tipo = 'compra' AND ref_id = ? AND categoria = 'Pago a proveedor'`, id);
+    return c;
+  }
+
+  function anularCompra(id, sucursal) {
+    return db.tx(() => {
+      const c = verCompra(id, sucursal);
+      if (c.estado === 'anulada') falla('La compra ya estaba anulada');
+      // Nunca deja el stock en negativo por anular una compra vieja: si ya se vendió parte de lo
+      // que trajo, hay que corregirlo a mano (ajuste de stock) antes de poder anularla.
+      for (const i of c.items) {
+        const stockActual = db.get('SELECT cantidad FROM stock_sucursal WHERE producto_id = ? AND sucursal = ?', i.producto_id, sucursal)?.cantidad || 0;
+        if (stockActual < i.cantidad) {
+          const p = db.get('SELECT nombre FROM productos WHERE id = ?', i.producto_id);
+          falla(`No se puede anular: ya se vendió parte del stock de ${p?.nombre || 'un producto'} que trajo esta compra`);
+        }
+      }
+      const etiqueta = `Anulación de compra${c.comprobante ? ` ${c.comprobante}` : ` N° ${id}`}`;
+      db.run(`UPDATE compras SET estado = 'anulada' WHERE id = ?`, id);
+      for (const i of c.items) moverStock(sucursal, i.producto_id, -i.cantidad, etiqueta, 'compra', id);
+      // Revierte la deuda que había dejado la compra (debe) y, por cada pago que se le había hecho
+      // al proveedor (que ya la había reducido), también revierte esa reducción (vuelve a sumar
+      // debe): si no, el pago quedaría contando dos veces a favor del proveedor.
+      asiento(sucursal, 'proveedor', c.proveedor_id, etiqueta, 0, c.total, 'compra', id);
+      for (const p of c.pagos) {
+        asiento(sucursal, 'proveedor', c.proveedor_id, etiqueta, p.monto, 0, 'compra', id);
+        movimientoCaja(sucursal, 'ingreso', 'Anulación de compra', etiqueta, p.medio, p.monto, 'compra', id);
+      }
+      return { ok: true };
     });
   }
 
@@ -440,7 +492,8 @@ export function crearApi(db) {
   /* ---- Clientes: propios de cada local ---- */
   {
     const campos = CAMPOS.clientes;
-    const valores = (b) => campos.map((c) => (c === 'nombre' ? requerido(b.nombre, 'el nombre', 120) : texto(b[c], 300)));
+    const valores = (b) => campos.map((c) => (c === 'nombre' ? requerido(b.nombre, 'el nombre', 120)
+      : c === 'limite_credito' ? entero(b.limite_credito ?? 0, 'El límite de fiado') : texto(b[c], 300)));
     ruta('GET', '/api/clientes', ({ sucursal }) => db.all(
       `SELECT t.*, COALESCE((SELECT SUM(debe - haber) FROM cuenta_corriente m WHERE m.entidad = 'cliente' AND m.entidad_id = t.id AND m.sucursal = ?), 0) saldo
        FROM clientes t WHERE t.activo = 1 AND t.sucursal = ? ORDER BY t.nombre`, sucursal, sucursal,
@@ -555,6 +608,8 @@ export function crearApi(db) {
     `SELECT c.*, p.nombre proveedor FROM compras c JOIN proveedores p ON p.id = c.proveedor_id WHERE c.sucursal = ? ORDER BY c.id DESC LIMIT 300`, sucursal,
   ));
   ruta('POST', '/api/compras', ({ b, sucursal }) => crearCompra(b, sucursal));
+  ruta('GET', '/api/compras/:id', ({ id, sucursal }) => verCompra(id, sucursal));
+  ruta('POST', '/api/compras/:id/anular', ({ id, sucursal }) => anularCompra(id, sucursal));
 
   ruta('GET', '/api/caja', ({ q, sucursal }) => {
     const { desde, hasta } = rango(q);
