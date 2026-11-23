@@ -870,3 +870,29 @@ test('anular compra, factura duplicada y límite de crédito (servidor propio, n
     fs.rmSync(datos, { recursive: true, force: true });
   }
 });
+
+test('con TRUST_PROXY, el límite de intentos de login usa la IP real (el último tramo de X-Forwarded-For), no uno falso que mande el cliente', async () => {
+  const puerto = 3116;
+  const urlBase = `http://127.0.0.1:${puerto}`;
+  const datos = fs.mkdtempSync(path.join(os.tmpdir(), 'izel-test-xff-'));
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: BASE, env: { ...process.env, PORT: String(puerto), IZEL_DATOS: datos, IZEL_CLAVE_INICIAL: CLAVE, TRUST_PROXY: '1' }, stdio: 'ignore',
+  });
+  const login = (clave, xff) => fetch(`${urlBase}/api/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': xff }, body: JSON.stringify({ clave }),
+  });
+  try {
+    for (let i = 0; i < 50; i += 1) {
+      try { await fetch(`${urlBase}/api/sesion`); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
+    }
+    // Cinco intentos fallidos, cada uno "mintiendo" una IP de origen distinta (lo que el cliente
+    // puede escribir), pero siempre con el mismo último tramo (el que pondría el proxy de verdad).
+    for (let i = 0; i < 5; i += 1) assert.equal((await login('mala', `1.2.3.${i}, 9.9.9.9`)).status, 401);
+    assert.equal((await login(CLAVE, '5.5.5.5, 9.9.9.9')).status, 429, 'mismo origen real (9.9.9.9): sigue bloqueado aunque cambie lo que manda el cliente');
+    assert.equal((await login(CLAVE, '1.2.3.4, 8.8.8.8')).status, 200, 'un origen real distinto (8.8.8.8) no comparte el límite del otro');
+  } finally {
+    proc.kill();
+    await new Promise((r) => setTimeout(r, 300));
+    fs.rmSync(datos, { recursive: true, force: true });
+  }
+});

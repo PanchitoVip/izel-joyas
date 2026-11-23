@@ -57,12 +57,18 @@ function claveCorrecta(clave, guardada) {
 }
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
+// Igual que con X-Forwarded-For: sólo se confía en este header si de verdad hay un proxy
+// delante (TRUST_PROXY=1) que lo esté poniendo él mismo. Sin eso, cualquiera podría mandarlo
+// mintiendo que la conexión es HTTPS cuando en realidad no pasó por ningún proxy.
+function esHttps(req) {
+  return DETRAS_DE_PROXY && req.headers['x-forwarded-proto'] === 'https';
+}
 function crearSesion(req, res, email = '') {
   const token = crypto.randomBytes(32).toString('hex');
   const expira = Date.now() + DIAS_SESION * 864e5;
   db.run('INSERT INTO sesiones (token, expira, email) VALUES (?, ?, ?)', hashToken(token), expira, email);
   db.run('DELETE FROM sesiones WHERE expira < ?', Date.now());
-  const seguro = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
+  const seguro = esHttps(req) ? '; Secure' : '';
   res.setHeader('set-cookie', `izel_sid=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${DIAS_SESION * 86400}${seguro}`);
 }
 function tokenDe(req) {
@@ -129,7 +135,10 @@ if (!db.conf('clave') && process.env.IZEL_CLAVE_INICIAL) {
 
 /* ---- Límites de intentos ---- */
 const intentos = new Map();
-const ipDe = (req) => (DETRAS_DE_PROXY && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress;
+// Si hay un solo proxy de confianza adelante (como en Render), el ÚLTIMO valor de X-Forwarded-For
+// es el que ese proxy vio de verdad; el primero lo puede escribir cualquiera con el cliente
+// (mandando su propio header), así que usarlo dejaría rotar la IP y saltarse el límite de intentos.
+const ipDe = (req) => (DETRAS_DE_PROXY && String(req.headers['x-forwarded-for'] || '').split(',').pop().trim()) || req.socket.remoteAddress;
 function limite(clave, max, ms) {
   const ahoraMs = Date.now();
   const e = intentos.get(clave);
@@ -247,6 +256,7 @@ async function rutaPublica(req, res, ruta) {
   // no crea sesión ni toca contraseñas, sólo confirma si ese mail de Google está autorizado.
   if (ruta === '/api/acceso-gestion' && req.method === 'POST') {
     if (!GOOGLE_ACTIVO) { json(res, 200, { autorizada: false }); return true; }
+    if (!limite(`acceso-gestion:${ipDe(req)}`, 30, 36e5)) throw new ErrorApi(429, 'Demasiados intentos');
     try {
       await verificarCredencialGoogle(String((await leerJson(req, 5000)).credential || ''));
       json(res, 200, { autorizada: true });
@@ -332,7 +342,7 @@ async function rutaSesion(req, res, ruta) {
     const vencimiento = estadosDrive.get(state);
     estadosDrive.delete(state);
     if (!vencimiento || vencimiento < Date.now()) throw new ErrorApi(400, 'El enlace de conexión con Google Drive venció o ya se usó. Probá de nuevo desde Ajustes');
-    const redirectUri = `${req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http'}://${req.headers.host}/api/drive/callback`;
+    const redirectUri = `${esHttps(req) ? 'https' : 'http'}://${req.headers.host}/api/drive/callback`;
     const tokens = await intercambiarCodigoPorTokens(String(q.get('code') || ''), {
       clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET, redirectUri, tokenUrl: GOOGLE_OAUTH_TOKEN_URL,
     });
@@ -392,7 +402,7 @@ async function rutaPrivada(req, res, ruta, url) {
     if (!DRIVE_ACTIVO) throw new ErrorApi(404, 'Ruta inexistente');
     const state = crypto.randomBytes(24).toString('hex');
     estadosDrive.set(state, Date.now() + 6e5);
-    const redirectUri = `${req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http'}://${req.headers.host}/api/drive/callback`;
+    const redirectUri = `${esHttps(req) ? 'https' : 'http'}://${req.headers.host}/api/drive/callback`;
     const parametros = new URLSearchParams({
       client_id: GOOGLE_CLIENT_ID, redirect_uri: redirectUri, response_type: 'code',
       scope: 'https://www.googleapis.com/auth/drive.readonly', access_type: 'offline', prompt: 'consent', state,
