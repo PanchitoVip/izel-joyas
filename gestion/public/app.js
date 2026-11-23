@@ -527,7 +527,11 @@ async function verCuenta(tabla, x) {
   const e = ENTIDADES[tabla];
   const c = await api('GET', `${tabla}/${x.id}/cuenta`);
   const esCliente = tabla === 'clientes';
+  const entidad = esCliente ? 'cliente' : 'proveedor';
   const msg = `Hola ${x.nombre}, te escribimos de Izel Joyas. Te recordamos que tenés un saldo pendiente de ${plata(c.saldo)}. ¡Muchas gracias!`;
+  // Un pago ya anulado deja su propia fila de reversa (ref_tipo = anulacion_pago, ref_id = la fila original):
+  // de ahí sale qué pagos ya no se pueden volver a anular.
+  const yaAnulados = new Set(c.movimientos.filter((r) => r.ref_tipo === 'anulacion_pago').map((r) => r.ref_id));
   const m = abrirModal(`Cuenta corriente: ${x.nombre}`, h`
     <p>${c.saldo > 0 ? h`${e.saldoTexto}: <strong class="neg">${plata(c.saldo)}</strong>`
       : c.saldo < 0 ? h`${e.saldoFavor}: <strong>${plata(-c.saldo)}</strong>`
@@ -541,7 +545,15 @@ async function verCuenta(tabla, x) {
         <button class="btn primary">Registrar ${esCliente ? 'cobro' : 'pago'}</button></div>
     </form>
     <h2>Movimientos</h2>
-    ${c.movimientos.length ? h`<table><thead><tr><th>Fecha</th><th>Concepto</th><th class="n">Debe</th><th class="n">Haber</th></tr></thead><tbody>${c.movimientos.map((r) => h`<tr><td>${fecha(r.fecha)}</td><td>${r.concepto}</td><td class="n">${r.debe ? plata(r.debe) : ''}</td><td class="n">${r.haber ? plata(r.haber) : ''}</td></tr>`)}</tbody></table>` : h`<p class="hint">Sin movimientos.</p>`}`);
+    ${c.movimientos.length ? h`<table><thead><tr><th>Fecha</th><th>Concepto</th><th class="n">Debe</th><th class="n">Haber</th><th></th></tr></thead><tbody>${c.movimientos.map((r) => h`<tr><td>${fecha(r.fecha)}</td><td>${r.concepto}</td><td class="n">${r.debe ? plata(r.debe) : ''}</td><td class="n">${r.haber ? plata(r.haber) : ''}</td>
+      <td class="actions">${r.ref_tipo === 'pago' && !yaAnulados.has(r.id) ? h`<button class="btn small" data-anular="${r.id}" type="button">Anular</button>` : ''}</td></tr>`)}</tbody></table>` : h`<p class="hint">Sin movimientos.</p>`}
+    <h2>Nota de crédito o débito</h2>
+    <p class="hint">Para un descuento, una corrección o perdonar parte de la deuda: ajusta la cuenta corriente sin que sea ni venta/compra ni un pago en caja.</p>
+    <form class="form" id="fn">
+      <label class="f">Monto ($, negativo = a favor)<input name="monto" type="number" step="0.01" required placeholder="Ej: -5000"></label>
+      <label class="f">Motivo<input name="concepto" required placeholder="Ej: descuento por cadena rota"></label>
+      <div class="modal-foot full"><button class="btn primary">Registrar ajuste</button></div>
+    </form>`);
   $('#fc', m).addEventListener('submit', intentar(async (ev) => {
     ev.preventDefault();
     const d = leerForm(ev.target);
@@ -555,6 +567,23 @@ async function verCuenta(tabla, x) {
     if (!monto.value) { monto.focus(); aviso('Escribí el monto de la deuda previa', true); return; }
     await api('POST', `${tabla}/${x.id}/saldo-inicial`, { monto: aCentavos(monto.value) });
     aviso('Deuda cargada');
+    await refrescar();
+    await verCuenta(tabla, x);
+  }));
+  $('#fn', m).addEventListener('submit', intentar(async (ev) => {
+    ev.preventDefault();
+    const d = leerForm(ev.target);
+    await api('POST', 'cuenta-corriente/ajuste', { entidad, entidad_id: x.id, monto: aCentavos(d.monto), concepto: d.concepto });
+    aviso('Ajuste registrado');
+    await refrescar();
+    await verCuenta(tabla, x);
+  }));
+  $('table', m)?.addEventListener('click', intentar(async (ev) => {
+    const b = ev.target.closest('[data-anular]');
+    if (!b) return;
+    if (!await confirmar('Anular pago', 'Revierte este pago (o cobro) y el movimiento de caja que generó. ¿Confirmás?', 'Anular')) return;
+    await api('POST', `cuenta-corriente/${b.dataset.anular}/anular`, {});
+    aviso('Pago anulado');
     await refrescar();
     await verCuenta(tabla, x);
   }));

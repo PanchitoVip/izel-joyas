@@ -55,10 +55,11 @@ export function crearApi(db) {
     );
   }
   function movimientoCaja(sucursal, tipo, categoria, concepto, medioPago, monto, refTipo = null, refId = null) {
-    db.run(
+    const { lastInsertRowid } = db.run(
       'INSERT INTO caja (fecha, sucursal, tipo, categoria, concepto, medio, monto, ref_tipo, ref_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ahora(), sucursal, tipo, categoria, concepto, medioPago, monto, refTipo, refId,
     );
+    return Number(lastInsertRowid);
   }
   function moverStock(sucursal, productoId, cantidad, motivo, refTipo = null, refId = null) {
     db.run(
@@ -526,8 +527,9 @@ export function crearApi(db) {
       const monto = entero(b.monto, 'El monto', 1);
       const { nombre } = db.get('SELECT nombre FROM clientes WHERE id = ?', id);
       db.tx(() => {
-        movimientoCaja(sucursal, 'ingreso', 'Cobranza', `Pago de ${nombre}`, medio(b.medio), monto, 'cliente', id);
-        asiento(sucursal, 'cliente', id, texto(b.concepto, 120) || `Pago (${b.medio})`, 0, monto);
+        const concepto = texto(b.concepto, 120) || `Pago (${b.medio})`;
+        const cajaId = movimientoCaja(sucursal, 'ingreso', 'Cobranza', `Pago de ${nombre}`, medio(b.medio), monto, 'pago', null);
+        asiento(sucursal, 'cliente', id, concepto, 0, monto, 'pago', cajaId);
       });
       return { saldo: saldo('cliente', id, sucursal) };
     });
@@ -576,8 +578,9 @@ export function crearApi(db) {
       const monto = entero(b.monto, 'El monto', 1);
       const { nombre } = db.get('SELECT nombre FROM proveedores WHERE id = ?', id);
       db.tx(() => {
-        movimientoCaja(sucursal, 'egreso', 'Pago a proveedor', `Pago a ${nombre}`, medio(b.medio), monto, 'proveedor', id);
-        asiento(sucursal, 'proveedor', id, texto(b.concepto, 120) || `Pago (${b.medio})`, 0, monto);
+        const concepto = texto(b.concepto, 120) || `Pago (${b.medio})`;
+        const cajaId = movimientoCaja(sucursal, 'egreso', 'Pago a proveedor', `Pago a ${nombre}`, medio(b.medio), monto, 'pago', null);
+        asiento(sucursal, 'proveedor', id, concepto, 0, monto, 'pago', cajaId);
       });
       return { saldo: saldo('proveedor', id, sucursal) };
     });
@@ -585,6 +588,42 @@ export function crearApi(db) {
       existe('proveedores', id);
       asiento(sucursal, 'proveedor', id, 'Saldo inicial', entero(b.monto, 'El monto', 1), 0);
       return { saldo: saldo('proveedor', id, sucursal) };
+    });
+  }
+
+  /* ---- Cuenta corriente: anular un pago/cobro puntual, y notas de crédito/débito manuales ---- */
+  {
+    // Un pago/cobro se puede anular (no un movimiento que ya viene de una venta o compra, para eso
+    // está anular esa operación). Nunca se borra: queda la reversa como un movimiento más, con su
+    // propio rastro, igual que anular una venta o una compra.
+    ruta('POST', '/api/cuenta-corriente/:id/anular', ({ id, sucursal }) => {
+      const mov = db.get('SELECT * FROM cuenta_corriente WHERE id = ? AND sucursal = ?', id, sucursal) || falla('Movimiento inexistente', 404);
+      if (mov.ref_tipo !== 'pago') falla('Este movimiento no se puede anular acá: es de una venta o una compra, anulá esa operación en su pantalla');
+      if (db.get(`SELECT id FROM cuenta_corriente WHERE ref_tipo = 'anulacion_pago' AND ref_id = ?`, mov.id)) falla('Este pago ya estaba anulado');
+      return db.tx(() => {
+        asiento(sucursal, mov.entidad, mov.entidad_id, `Anulación: ${mov.concepto}`, mov.haber, mov.debe, 'anulacion_pago', mov.id);
+        const cajaMov = db.get('SELECT * FROM caja WHERE id = ?', mov.ref_id);
+        if (cajaMov) {
+          movimientoCaja(
+            sucursal, cajaMov.tipo === 'ingreso' ? 'egreso' : 'ingreso', 'Anulación de pago',
+            `Anulación: ${cajaMov.concepto}`, cajaMov.medio, cajaMov.monto, 'anulacion_pago', mov.id,
+          );
+        }
+        return { ok: true };
+      });
+    });
+    // Para un descuento, corrección o perdón de deuda puntual que no es ni una venta/compra ni un
+    // pago en efectivo: no mueve caja, sólo la cuenta corriente. Un monto positivo suma deuda
+    // (nota de débito), uno negativo la baja o deja saldo a favor (nota de crédito).
+    ruta('POST', '/api/cuenta-corriente/ajuste', ({ b, sucursal }) => {
+      if (!['cliente', 'proveedor'].includes(b.entidad)) falla('Entidad no válida');
+      const entidadId = entero(b.entidad_id, 'La entidad', 1);
+      if (b.entidad === 'cliente') existe('clientes', entidadId, sucursal); else existe('proveedores', entidadId);
+      const monto = entero(b.monto, 'El monto', -1e12, 1e12);
+      if (monto === 0) falla('El monto no puede ser cero');
+      const concepto = requerido(b.concepto, 'el concepto (por qué se hace este ajuste)', 120);
+      asiento(sucursal, b.entidad, entidadId, concepto, monto > 0 ? monto : 0, monto < 0 ? -monto : 0, 'ajuste_manual');
+      return { saldo: saldo(b.entidad, entidadId, sucursal) };
     });
   }
 

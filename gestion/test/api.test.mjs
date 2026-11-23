@@ -864,6 +864,28 @@ test('anular compra, factura duplicada y límite de crédito (servidor propio, n
       permitir_exceder_credito: true,
     });
     assert.ok(venta.id, 'con permitir_exceder_credito la dueña puede igual fiarle a un cliente de confianza');
+
+    // Anular un pago/cobro puntual: revierte la cuenta corriente y el movimiento de caja, y no se puede anular dos veces.
+    const { id: clientePago } = await okA('POST', '/api/clientes', { nombre: 'Cliente para anular pago' });
+    await okA('POST', `/api/clientes/${clientePago}/saldo-inicial`, { monto: 500000 });
+    await okA('POST', `/api/clientes/${clientePago}/pago`, { monto: 500000, medio: 'Efectivo' });
+    assert.equal((await okA('GET', `/api/clientes/${clientePago}/cuenta`)).saldo, 0);
+    const movimientos = (await okA('GET', `/api/clientes/${clientePago}/cuenta`)).movimientos;
+    const pago = movimientos.find((m) => m.ref_tipo === 'pago');
+    assert.ok(pago, 'el pago quedó etiquetado como tal, no como un movimiento suelto');
+    await okA('POST', `/api/cuenta-corriente/${pago.id}/anular`, {});
+    assert.equal((await okA('GET', `/api/clientes/${clientePago}/cuenta`)).saldo, 500000, 'la deuda original vuelve, el pago se revirtió');
+    assert.equal((await pedirA('POST', `/api/cuenta-corriente/${pago.id}/anular`, {})).status, 400, 'no se puede anular el mismo pago dos veces');
+    const cajaLuego = await okA('GET', '/api/caja');
+    assert.ok(cajaLuego.movimientos.some((c) => c.categoria === 'Anulación de pago' && c.tipo === 'egreso' && c.monto === 500000), 'revierte también el ingreso en caja');
+
+    // Nota de crédito/débito manual: ajusta la cuenta corriente sin que sea ni venta, ni compra, ni pago en caja.
+    const { id: clienteNota } = await okA('POST', '/api/clientes', { nombre: 'Cliente para nota de crédito' });
+    await okA('POST', `/api/clientes/${clienteNota}/saldo-inicial`, { monto: 100000 });
+    await okA('POST', '/api/cuenta-corriente/ajuste', { entidad: 'cliente', entidad_id: clienteNota, monto: -30000, concepto: 'Descuento por cadena rota' });
+    assert.equal((await okA('GET', `/api/clientes/${clienteNota}/cuenta`)).saldo, 70000, 'la nota de crédito bajó la deuda sin tocar caja');
+    const cajaFinal = await okA('GET', '/api/caja');
+    assert.ok(!cajaFinal.movimientos.some((c) => c.concepto === 'Descuento por cadena rota'), 'un ajuste manual de cuenta corriente nunca mueve caja');
   } finally {
     proc.kill();
     await new Promise((r) => setTimeout(r, 300));
