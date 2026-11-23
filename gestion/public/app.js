@@ -424,15 +424,21 @@ VISTAS.productos = async (v, param) => {
     <div class="tablewrap"><table>
       <thead><tr><th></th><th>Código</th><th>Producto</th><th class="n">Costo</th><th class="n">Precio</th><th class="n">Stock</th><th>Catálogo</th><th></th></tr></thead>
       <tbody id="filas"></tbody></table></div>`;
+  // Con miles de productos, dibujar una fila por cada uno de una sola vez hace lenta la pantalla:
+  // se corta en 200 y se pide buscar o filtrar para acotar más.
+  const LIMITE = 200;
   const pintar = () => {
     const q = filtroProductos.q.toLowerCase();
-    const filas = lista.filter((p) => (!q || `${p.nombre} ${p.codigo}`.toLowerCase().includes(q))
+    const todas = lista.filter((p) => (!q || `${p.nombre} ${p.codigo}`.toLowerCase().includes(q))
       && (!filtroProductos.categoria || p.categoria === filtroProductos.categoria)
       && (filtroProductos.vista !== 'revisar' || p.revisar || !p.precio)
       && (filtroProductos.vista !== 'bajo' || p.stock <= p.stock_minimo)
       && (filtroProductos.vista !== 'oculto' || !p.publicado));
+    const filas = todas.slice(0, LIMITE);
     $('#filas').innerHTML = filas.length ? h`${filas.map(filaProducto)}` : h`<tr><td colspan="8" class="empty">No hay productos con ese filtro.</td></tr>`;
-    $('#cuenta').textContent = `${filas.length} productos`;
+    $('#cuenta').textContent = todas.length > LIMITE
+      ? `Mostrando ${LIMITE} de ${todas.length}. Buscá o filtrá para acotar.`
+      : `${todas.length} productos`;
   };
   pintar();
   $('#q').addEventListener('input', (e) => { filtroProductos.q = e.target.value; pintar(); });
@@ -449,7 +455,10 @@ VISTAS.productos = async (v, param) => {
 };
 
 /* ---- Catálogo (vista fotográfica: renombrar rápido y ver qué falta revisar) ---- */
-let filtroCatalogo = { soloRevisar: false };
+let filtroCatalogo = { soloRevisar: false, q: '' };
+// Vive fuera de la vista (no en el DOM de Catálogo) para que, si la dueña navega a otra pantalla
+// mientras sincroniza, al volver a Catálogo se vea que sigue corriendo en vez de parecer que no pasó nada.
+let driveSincronizando = false;
 function tarjetaCatalogo(p) {
   return h`<div class="cat-card">
     <button class="cat-foto" type="button" data-ver="${p.id}" title="Editar precio, costo y más"><img src="${urlImagen(p.imagen)}" alt="${p.nombre || 'Producto sin nombre todavía'}" loading="lazy">${p.revisar ? h`<span class="tag warn cat-badge">Revisar</span>` : ''}</button>
@@ -469,20 +478,32 @@ VISTAS.catalogo = async (v) => {
   const a = s.driveConectado ? await api('GET', 'ajustes') : null;
   v.innerHTML = h`
     <div class="head"><h1>Catálogo</h1><div class="head-actions">
-      ${s.driveConectado ? h`<button class="btn" id="sincronizar" type="button">Sincronizar ahora</button>` : ''}</div></div>
+      ${s.driveConectado ? h`<button class="btn" id="sincronizar" type="button" ${driveSincronizando ? 'disabled' : ''}>${driveSincronizando ? 'Sincronizando…' : 'Sincronizar ahora'}</button>` : ''}</div></div>
     <p class="hint">Acá ves todas las fotos del catálogo. Los que dicen “Revisar” llegaron de Google Drive o tienen datos dudosos: tocá la foto para cargarles precio, costo y confirmar el nombre.</p>
     ${a && h`<p class="hint" id="drive-estado">${estadoDrive(a)}</p>`}
-    <div class="barra" id="barra" hidden><i></i></div>
-    <label class="check"><input type="checkbox" id="solo-revisar" ${filtroCatalogo.soloRevisar ? 'checked' : ''}> Mostrar sólo los que están a revisar</label>
+    <div class="barra" id="barra" ${driveSincronizando ? '' : 'hidden'}><i></i></div>
+    <div class="row">
+      <input class="grow" id="q-cat" type="search" placeholder="Buscar por nombre o código" aria-label="Buscar" value="${filtroCatalogo.q}">
+      <label class="check"><input type="checkbox" id="solo-revisar" ${filtroCatalogo.soloRevisar ? 'checked' : ''}> Mostrar sólo los que están a revisar</label>
+    </div>
     <datalist id="cats-catalogo">${op.categorias_producto.map((c) => h`<option value="${c}"></option>`)}</datalist>
     <p class="hint" id="cuenta"></p>
     <div class="grid-catalogo" id="grilla"></div>`;
+  // Con miles de fotos (la carpeta del proveedor), armar una tarjeta por cada una de una sola vez
+  // hace lenta la pantalla: se corta en 200 y se pide buscar o filtrar para acotar más.
+  const LIMITE = 200;
   const pintar = () => {
-    const filas = lista.filter((p) => !filtroCatalogo.soloRevisar || p.revisar);
+    const q = filtroCatalogo.q.toLowerCase();
+    const todas = lista.filter((p) => (!filtroCatalogo.soloRevisar || p.revisar)
+      && (!q || `${p.nombre} ${p.codigo}`.toLowerCase().includes(q)));
+    const filas = todas.slice(0, LIMITE);
     $('#grilla').innerHTML = filas.length ? h`${filas.map(tarjetaCatalogo)}` : h`<p class="empty">No hay productos con ese filtro.</p>`;
-    $('#cuenta').textContent = `${filas.length} productos`;
+    $('#cuenta').textContent = todas.length > LIMITE
+      ? `Mostrando ${LIMITE} de ${todas.length}. Buscá o marcá "sólo a revisar" para acotar.`
+      : `${todas.length} productos`;
   };
   pintar();
+  $('#q-cat').addEventListener('input', (e) => { filtroCatalogo.q = e.target.value; pintar(); });
   $('#solo-revisar').addEventListener('change', (e) => { filtroCatalogo.soloRevisar = e.target.checked; pintar(); });
   $('#grilla').addEventListener('change', intentar(async (e) => {
     const campo = e.target.dataset.campo;
@@ -499,6 +520,8 @@ VISTAS.catalogo = async (v) => {
     formProducto(lista.find((x) => x.id === Number(b.dataset.ver)), proveedores);
   });
   $('#sincronizar')?.addEventListener('click', intentar(async (e) => {
+    if (driveSincronizando) return;
+    driveSincronizando = true;
     e.target.disabled = true;
     e.target.textContent = 'Sincronizando…';
     $('#barra').hidden = false;
@@ -508,6 +531,7 @@ VISTAS.catalogo = async (v) => {
       else if (r.sin_espacio) aviso(`Se quedó sin espacio: trajo ${r.nuevos} de ${r.encontrados} fotos. La próxima vez sigue donde quedó.`, true);
       else aviso(`Listo: ${r.nuevos} producto${r.nuevos === 1 ? '' : 's'} nuevo${r.nuevos === 1 ? '' : 's'}`);
     } finally {
+      driveSincronizando = false;
       refrescar();
     }
   }));

@@ -60,7 +60,7 @@ textarea { resize: vertical; }
 input[type='checkbox'] { width: 18px; min-height: 18px; accent-color: var(--wine); }
 label.f { display: grid; gap: .2rem; font-size: .88rem; color: var(--muted); }
 label.f > * { color: var(--ink); font-size: 1rem; }
-label.check { display: flex; align-items: center; gap: .5rem; min-height: 40px; }
+label.check { display: inline-flex; align-items: center; gap: .5rem; min-height: 40px; }
 .form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
 .form .full { grid-column: 1 / -1; }
 .hint { color: var(--muted); font-size: .88rem; }
