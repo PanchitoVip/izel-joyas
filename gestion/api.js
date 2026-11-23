@@ -86,16 +86,22 @@ export function crearApi(db) {
   /* ---- Productos ---- */
   function datosProducto(b) {
     const proveedor = b.proveedor_id ? entero(b.proveedor_id, 'Proveedor', 1) : null;
+    const costo = entero(b.costo ?? 0, 'El costo');
+    const precio = entero(b.precio ?? 0, 'El precio');
+    const publicado = b.publicado ? 1 : 0;
+    if (publicado && precio > 0 && precio < costo && !b.permitir_precio_bajo_costo) {
+      falla('El precio de venta queda por debajo del costo', 409);
+    }
     return {
       nombre: requerido(b.nombre, 'el nombre', 120),
       descripcion: texto(b.descripcion, 500),
       categoria: requerido(b.categoria, 'la categoría', 60),
       material: texto(b.material, 80),
-      costo: entero(b.costo ?? 0, 'El costo'),
-      precio: entero(b.precio ?? 0, 'El precio'),
+      costo,
+      precio,
       proveedor_id: proveedor,
       imagen: texto(b.imagen, 200),
-      publicado: b.publicado ? 1 : 0,
+      publicado,
       destacado: b.destacado ? 1 : 0,
     };
   }
@@ -499,9 +505,13 @@ export function crearApi(db) {
       `SELECT t.*, COALESCE((SELECT SUM(debe - haber) FROM cuenta_corriente m WHERE m.entidad = 'cliente' AND m.entidad_id = t.id AND m.sucursal = ?), 0) saldo
        FROM clientes t WHERE t.activo = 1 AND t.sucursal = ? ORDER BY t.nombre`, sucursal, sucursal,
     ));
-    ruta('POST', '/api/clientes', ({ b, sucursal }) => ({
-      id: Number(db.run(`INSERT INTO clientes (${campos.join(', ')}, sucursal) VALUES (${campos.map(() => '?').join(', ')}, ?)`, ...valores(b), sucursal).lastInsertRowid),
-    }));
+    ruta('POST', '/api/clientes', ({ b, sucursal }) => {
+      if (!b.permitir_duplicado) {
+        const repetido = db.get('SELECT id FROM clientes WHERE activo = 1 AND sucursal = ? AND LOWER(nombre) = LOWER(?)', sucursal, requerido(b.nombre, 'el nombre', 120));
+        if (repetido) falla(`Ya existe un cliente llamado "${b.nombre}" en este local`, 409);
+      }
+      return { id: Number(db.run(`INSERT INTO clientes (${campos.join(', ')}, sucursal) VALUES (${campos.map(() => '?').join(', ')}, ?)`, ...valores(b), sucursal).lastInsertRowid) };
+    });
     ruta('PUT', '/api/clientes/:id', ({ id, b, sucursal }) => {
       existe('clientes', id, sucursal);
       db.run(`UPDATE clientes SET ${campos.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`, ...valores(b), id);
@@ -548,9 +558,13 @@ export function crearApi(db) {
       `SELECT t.*, COALESCE((SELECT SUM(debe - haber) FROM cuenta_corriente m WHERE m.entidad = 'proveedor' AND m.entidad_id = t.id AND m.sucursal = ?), 0) saldo
        FROM proveedores t WHERE t.activo = 1 ORDER BY t.nombre`, sucursal,
     ));
-    ruta('POST', '/api/proveedores', ({ b }) => ({
-      id: Number(db.run(`INSERT INTO proveedores (${campos.join(', ')}) VALUES (${campos.map(() => '?').join(', ')})`, ...valores(b)).lastInsertRowid),
-    }));
+    ruta('POST', '/api/proveedores', ({ b }) => {
+      if (!b.permitir_duplicado) {
+        const repetido = db.get('SELECT id FROM proveedores WHERE activo = 1 AND LOWER(nombre) = LOWER(?)', requerido(b.nombre, 'el nombre', 120));
+        if (repetido) falla(`Ya existe un proveedor llamado "${b.nombre}"`, 409);
+      }
+      return { id: Number(db.run(`INSERT INTO proveedores (${campos.join(', ')}) VALUES (${campos.map(() => '?').join(', ')})`, ...valores(b)).lastInsertRowid) };
+    });
     ruta('PUT', '/api/proveedores/:id', ({ id, b }) => {
       existe('proveedores', id);
       db.run(`UPDATE proveedores SET ${campos.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`, ...valores(b), id);

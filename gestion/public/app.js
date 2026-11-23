@@ -326,7 +326,15 @@ function formProducto(p, proveedores) {
       ...d, imagen, costo: aCentavos(d.costo), precio: aCentavos(d.precio), stock_minimo: Number(d.stock_minimo || 0),
       stock: Number(d.stock || 0), publicado: Boolean(d.publicado), destacado: Boolean(d.destacado),
     };
-    if (nuevo) await api('POST', 'productos', cuerpo); else await api('PUT', `productos/${p.id}`, cuerpo);
+    try {
+      if (nuevo) await api('POST', 'productos', cuerpo); else await api('PUT', `productos/${p.id}`, cuerpo);
+    } catch (err) {
+      if (err.status === 409 && await confirmar('Precio por debajo del costo', `${err.message}. ¿Guardar igual?`, 'Guardar igual')) {
+        const forzado = { ...cuerpo, permitir_precio_bajo_costo: true };
+        if (nuevo) await api('POST', 'productos', forzado); else await api('PUT', `productos/${p.id}`, forzado);
+      } else if (err.status !== 409) throw err;
+      else return;
+    }
     op = await api('GET', 'opciones');
     cerrarModal();
     aviso('Producto guardado');
@@ -510,7 +518,18 @@ function formEntidad(tabla, x = {}) {
     ev.preventDefault();
     const d = leerForm(ev.target);
     if (d.limite_credito !== undefined) d.limite_credito = aCentavos(d.limite_credito);
-    if (x.id) await api('PUT', `${tabla}/${x.id}`, d); else await api('POST', tabla, d);
+    if (x.id) {
+      await api('PUT', `${tabla}/${x.id}`, d);
+    } else {
+      try {
+        await api('POST', tabla, d);
+      } catch (err) {
+        if (err.status === 409 && await confirmar(`${e.singular[0].toUpperCase()}${e.singular.slice(1)} repetido`, `${err.message}. ¿Guardarlo igual?`, 'Guardar igual')) {
+          await api('POST', tabla, { ...d, permitir_duplicado: true });
+        } else if (err.status !== 409) throw err;
+        else return;
+      }
+    }
     cerrarModal();
     aviso('Guardado');
     refrescar();

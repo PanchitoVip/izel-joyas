@@ -902,6 +902,33 @@ test('anular compra, factura duplicada y límite de crédito (servidor propio, n
     const cierre3 = await okA('POST', '/api/caja/cierre', { contado: (await okA('GET', '/api/caja')).efectivo });
     assert.equal((await pedirA('POST', `/api/caja/cierres/${cierre2.id}/anular`, {})).status, 400, 'hay un cierre posterior: no se puede anular uno de en medio');
     await okA('POST', `/api/caja/cierres/${cierre3.id}/anular`, {});
+
+    // Cliente y proveedor duplicados: avisan, no bloquean si se confirma.
+    await okA('POST', '/api/clientes', { nombre: 'Cliente repetido' });
+    const clienteRep = await pedirA('POST', '/api/clientes', { nombre: 'cliente REPETIDO' });
+    assert.equal(clienteRep.status, 409, 'mismo nombre (sin importar mayúsculas) en el mismo local');
+    assert.ok((await okA('POST', '/api/clientes', { nombre: 'Cliente repetido', permitir_duplicado: true })).id, 'con permitir_duplicado sí se puede: puede ser gente distinta con el mismo nombre');
+
+    await okA('POST', '/api/proveedores', { nombre: 'Proveedor repetido' });
+    const provRep = await pedirA('POST', '/api/proveedores', { nombre: 'Proveedor repetido' });
+    assert.equal(provRep.status, 409);
+    assert.ok((await okA('POST', '/api/proveedores', { nombre: 'Proveedor repetido', permitir_duplicado: true })).id);
+
+    // Precio de venta por debajo del costo: avisa si el producto se publica así, no bloquea si se confirma.
+    const precioBajo = await pedirA('POST', '/api/productos', {
+      nombre: 'Precio bajo costo', categoria: 'Anillos', costo: 100000, precio: 50000, publicado: true,
+    });
+    assert.equal(precioBajo.status, 409, 'publicado con precio por debajo del costo');
+    assert.ok(
+      (await okA('POST', '/api/productos', {
+        nombre: 'Precio bajo costo', categoria: 'Anillos', costo: 100000, precio: 50000, publicado: true, permitir_precio_bajo_costo: true,
+      })).id,
+      'con permitir_precio_bajo_costo sí se puede: puede ser una liquidación a pérdida a propósito',
+    );
+    assert.ok(
+      (await okA('POST', '/api/productos', { nombre: 'Precio bajo costo sin publicar', categoria: 'Anillos', costo: 100000, precio: 50000 })).id,
+      'sin publicar no avisa: todavía se está cargando el producto',
+    );
   } finally {
     proc.kill();
     await new Promise((r) => setTimeout(r, 300));
